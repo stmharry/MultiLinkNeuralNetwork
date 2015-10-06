@@ -24,12 +24,13 @@ classdef NN < handle
     end
 
     methods
-        function nn = NN(arg)
-            if(isa(arg, 'char'))
-                file = arg;
+        function nn = NN(varargin)
+            if(nargin == 1)
+                file = varargin{1};
                 % TODO
-            elseif(isa(arg, 'Blob'))
-                blobs = arg;
+            elseif(nargin == 2)
+                blobs = varargin{1};
+                opt = varargin{2};
 
                 nn.gpu = (gpuDeviceCount > 0);
                 if(nn.gpu)
@@ -53,61 +54,54 @@ classdef NN < handle
 
                 nn.weight = cell(blobNum);
                 nn.gradient = cell(blobNum);
-            end
-        end
-
-        function initialize(nn, opt)
-            [from, to] = find(nn.link);
-            for i = 1:length(from)
-                f = from(i);
-                t = to(i);
-
-                dimFrom = nn.blobs(f).dimension;
-                dimTo = nn.blobs(t).dimension;
-
-                nn.weight{f, t} = ...
-                    [NN.zeros(dimTo, 1, nn.gpu, nn.real), ...
-                     (NN.rand(dimTo, dimFrom, nn.gpu, nn.real) - 0.5) * 2 / sqrt(dimFrom)];
-                nn.gradient{f, t} = NN.zeros(dimTo, dimFrom + 1, nn.gpu, nn.real);
-            end
-        end
-
-        function train(nn, in, out, opt)
-            opt.flag = NN.FLAG_TRAIN;
-
-            if(opt.train == Opt.TRAIN_HANDLE)
-                batchNum = 1;
-                nn.batchSize = opt.batchSize;
-            else
-                if(opt.train == Opt.TRAIN_COMPACT)
-                    out = cellfun(@(x) bsxfun(@eq, unique(x)', x), out, 'UniformOutput', false);
+           
+                [from, to] = find(nn.link);
+                for i = 1:length(from)
+                    f = from(i);
+                    t = to(i);
+         
+                    dimFrom = nn.blobs(f).dimension;
+                    dimTo = nn.blobs(t).dimension;
+         
+                    nn.weight{f, t} = ...
+                        [NN.zeros(dimTo, 1, nn.gpu, nn.real), ...
+                         (NN.rand(dimTo, dimFrom, nn.gpu, nn.real) - 0.5) * 2 / sqrt(dimFrom)];
+                    nn.gradient{f, t} = NN.zeros(dimTo, dimFrom + 1, nn.gpu, nn.real);
                 end
-     
-                in = NN.cast(in, nn.real);
-                out = NN.cast(out, nn.real);
+            end
+        end
+
+        function train(nn, datum, opt)
+            opt.flag = NN.FLAG_TRAIN;
             
-                batchNum = ceil(opt.sampleNum / opt.batchSize);
+            switch(opt.train)
+                case Opt.TRAIN_SLICE
+                    datum.in = NN.cast(datum.in, nn.real);
+                    datum.out = NN.cast(datum.out, nn.real);
+                    batchNum = ceil(datum.sampleNum / opt.batchSize);
+                case Opt.TRAIN_GENERATE
+                    batchNum = 1;
             end
      
             for e = 1:opt.epochNum
                 tic;
-                if(opt.train ~= Opt.TRAIN_HANDLE)
-                    permutation = randperm(opt.sampleNum);
+                if(opt.train == Opt.TRAIN_SLICE)
+                    permutation = randperm(datum.sampleNum);
                 end
                 for b = 1:batchNum
-                    if(opt.train == Opt.TRAIN_HANDLE)
-                        inBatch = in(opt);
-                        outBatch = out(opt);
-                    else
-                        sel = permutation((b - 1) * opt.batchSize + 1:min(b * opt.batchSize, opt.sampleNum));
-                        nn.batchSize = length(sel); 
-                        inBatch = NN.slice(in, sel);
-                        outBatch = NN.slice(out, sel);
+                    switch(opt.train)
+                        case Opt.TRAIN_SLICE
+                            sel = permutation((b - 1) * opt.batchSize + 1:min(b * opt.batchSize, datum.sampleNum));
+                            nn.batchSize = length(sel);
+                            datum.slice(sel);
+                        case Opt.TRAIN_GENERATE
+                            nn.batchSize = opt.batchSize;
+                            datum.generate(datum, opt);
                     end
-     
+
                     nn.clean(opt);
-                    nn.forward(inBatch, opt);
-                    nn.backward(outBatch, opt);
+                    nn.forward(datum.inBatch, opt);
+                    nn.backward(datum.outBatch, opt);
                     nn.update(opt);
                 end
                 time = toc;
@@ -233,16 +227,18 @@ classdef NN < handle
             end
         end
 
-        function predicted = test(nn, in, opt)
+        function test(nn, datum, opt)
             opt.flag = NN.FLAG_TEST;
-            batchNum = ceil(opt.sampleNum / opt.batchSize);
+
+            in = datum.in;
+            batchNum = ceil(datum.sampleNum / opt.batchSize);
 
             out = find(nn.output);
-            predicted = cell(1, length(out));
+            datum.predicted = cell(1, length(out));
 
             tic;
             for b = 1:batchNum
-                sel = (b - 1) * opt.batchSize + 1:min(b * opt.batchSize, opt.sampleNum);
+                sel = (b - 1) * opt.batchSize + 1:min(b * opt.batchSize, datum.sampleNum);
                 nn.batchSize = length(sel);
 
                 inBatch = NN.slice(in, sel);
@@ -254,7 +250,7 @@ classdef NN < handle
                 if(opt.test == Opt.TEST_MAX)
                     outBatch = cellfun(@NN.maxIndex, outBatch, 'UniformOutput', false);
                 end
-                predicted = cellfun(@(x, y) [x, gather(y)], predicted, outBatch, 'UniformOutput', false);
+                datum.predicted = cellfun(@(x, y) [x, gather(y)], datum.predicted, outBatch, 'UniformOutput', false);
             end
             time = toc;
             fprintf('[DNN Testing] Time = %.3f s\n', time);

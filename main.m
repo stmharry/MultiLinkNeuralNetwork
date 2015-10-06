@@ -1,13 +1,11 @@
 dataset = DatasetACDW();
-datum = Datum();
 
-datum = dataset.getTrainDatum(datum);
 blobs = dataset.getBlobs();
-opt = dataset.getOpt(datum);
+opt = dataset.getOpt();
+nn = NN(blobs, opt);
 
-nn = NN(blobs);
-nn.initialize(opt);
-nn.train(datum.in, datum.out, opt);
+datum = dataset.getTrainDatum();
+nn.train(datum, opt);
 
 %datum = dataset.getTestDatum(datum);
-datum.predicted = nn.test(datum.in, opt);
+%nn.test(datum, opt);

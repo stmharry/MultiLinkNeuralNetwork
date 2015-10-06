@@ -3,6 +3,6 @@ classdef(Abstract) Dataset < handle
         datum = getTrainDatum(datum);
         datum = getTestDatum(datum);
         blobs = getBlobs();
-        opt = getOpt(datum);
+        opt = getOpt();
     end
 end

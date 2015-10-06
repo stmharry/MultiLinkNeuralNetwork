@@ -13,9 +13,18 @@ classdef Datum < handle
 
         mu;
         sigma;
+
+        inBatch;
+        outBatch;
+        generate;
     end
 
     methods
+        function slice(sel)
+            inBatch = cellfun(@(x) x(:, sel), in, 'UniformOutput', false);
+            outBatch = cellfun(@(x) x(:, sel), out, 'UniformOutput', false);
+        end
+        
         function normalize(datum, arg)
             if(isa(arg, 'function_handle'))
                 func = arg;
