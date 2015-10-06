@@ -11,28 +11,29 @@ classdef Blob < handle
     end
 
     properties
-        input;
-        output;
-        next;
-        prev;
-
+        id;
         dimension;
         type;
 
         value;
         error;
         extra;
+        
+        input;
+        output;
+        next;
+        prev;
     end
 
     methods
         function blob = Blob(dimension, type)
+            blob.dimension = dimension;
+            blob.type = type;
+
             blob.input = false;
             blob.output = false;
             blob.next = [];
             blob.prev = [];
-
-            blob.dimension = dimension;
-            blob.type = type;
         end
 
         function blob = setInput(blob)

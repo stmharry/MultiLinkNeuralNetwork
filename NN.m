@@ -33,44 +33,26 @@ classdef NN < handle
 
                 nn.gpu = (gpuDeviceCount > 0);
                 if(nn.gpu)
-                    real = 'double';
+                    nn.real = 'double';
                 end
                 nn.blobs = blobs;
-
                 blobNum = length(blobs);
+                
                 nn.input = sparse(blobNum, 1);
                 nn.output = sparse(blobNum, 1);
                 nn.link = sparse(blobNum, blobNum);
+                for i = blobNum:-1:1
+                    blob = nn.blobs(i);
+                    blob.id = i;
+                    nn.input(i) = blob.input;
+                    nn.output(i) = blob.output;
+                    for j = blob.next
+                        nn.link(i, j.id) = true;
+                    end
+                end
+
                 nn.weight = cell(blobNum);
                 nn.gradient = cell(blobNum);
-            end
-        end
-
-        function nn = setIndex(nn, index)
-            if(index > length(nn.blobs))
-                error('Index exceeds blob number!');
-            end
-            nn.index = index;
-        end
-
-        function nn = setInput(nn)
-            nn.input(nn.index) = true;
-        end
-
-        function nn = setOutput(nn)
-            nn.output(nn.index) = true;
-        end
-        
-        function nn = setNext(nn, index)
-            nn.link(nn.index, index) = true;
-            nn.setIndex(index);
-        end
-
-        function setDefaultLink(nn)
-            nn.input(1) = true;
-            nn.output(end) = true;
-            for i = 1:(length(nn.blobs) - 1)
-                nn.link(i, i + 1) = true;
             end
         end
 
