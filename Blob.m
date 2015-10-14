@@ -17,7 +17,8 @@ classdef Blob < handle
 
         value;
         error;
-        extra;
+        dropout;
+        aux;
         
         input;
         output;

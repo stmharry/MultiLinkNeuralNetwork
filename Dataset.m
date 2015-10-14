@@ -1,17 +1,19 @@
-classdef(Abstract) Dataset < handle
+classdef Dataset < handle
     properties
         in;
         out;
         predict;
         sampleNum;
+
+        blobs;
+        opt;
     end
 
     methods(Abstract)
         getTrainData(dataset);
         getTestData(dataset);
-        showTestInfo(dataset);
 
-        blobs = getBlobs(dataset);
-        opt = getOpt(dataset);
+        postTest(dataset, blobs);
+        showTestInfo(dataset);
     end
 end

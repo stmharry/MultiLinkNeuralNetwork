@@ -11,8 +11,10 @@ classdef NN < handle
         gpu;
         real = 'double';
 
+        dataset;
         blobs;
-        index;
+        opt;
+
         input;
         output;
         link;
@@ -24,20 +26,20 @@ classdef NN < handle
     end
 
     methods
-        function nn = NN(varargin)
-            if(nargin == 1)
-                file = varargin{1};
+        function nn = NN(arg)
+            if(isa(arg, 'char'))
+                file = arg;
                 % TODO
-            elseif(nargin == 2)
-                blobs = varargin{1};
-                opt = varargin{2};
+            elseif(isa(arg, 'Dataset'))
+                nn.dataset = arg;
+                nn.blobs = arg.blobs;
+                nn.opt = arg.opt;
 
                 nn.gpu = (gpuDeviceCount > 0);
                 if(nn.gpu)
                     nn.real = 'double';
                 end
-                nn.blobs = blobs;
-                blobNum = length(blobs);
+                blobNum = length(nn.blobs);
                 
                 nn.input = sparse(blobNum, 1);
                 nn.output = sparse(blobNum, 1);
@@ -71,11 +73,12 @@ classdef NN < handle
             end
         end
 
-        function train(nn, dataset, opt)
+        function train(nn)
+            dataset = nn.dataset;
+            opt = nn.opt;
+
+            dataset.getTrainData();
             opt.flag = NN.TRAIN;
-            
-            dataset.in = NN.cast(dataset.in, nn.real);
-            dataset.out = NN.cast(dataset.out, nn.real);
             batchNum = ceil(dataset.sampleNum / opt.batchSize);
      
             for e = 1:opt.epochNum
@@ -89,30 +92,77 @@ classdef NN < handle
                     outBatch = NN.slice(dataset.out, sel);
 
                     nn.clean(opt);
-                    nn.forward(inBatch, opt);
-                    nn.backward(outBatch, opt);
+                    nn.feed(inBatch, opt);
+                    nn.forward(opt);
+                    nn.collect(outBatch, opt);
+                    nn.backward(opt);
                     nn.update(opt);
                 end
                 time = toc;
-                fprintf('[DNN Training] Epoch = %d, Time = %.3f s, MSE = %.3f\n', e, time, nn.error);
+
+                fprintf('[DNN Training] Epoch = %d, Time = %.3f s, Error = ', e, time);
+                fprintf('%.3f ', nn.error / batchNum);
+                fprintf('\n');
             end
+        end
+        
+        function test(nn)
+            dataset = nn.dataset;
+            opt = nn.opt;
+
+            dataset.getTestData();
+            opt.flag = NN.TEST;
+            batchNum = ceil(dataset.sampleNum / opt.batchSize);
+
+            out = find(nn.output);
+            dataset.predict = cell(1, length(out));
+
+            tic;
+            for b = 1:batchNum
+                sel = (b - 1) * opt.batchSize + 1:min(b * opt.batchSize, dataset.sampleNum);
+                nn.batchSize = length(sel);
+
+                inBatch = NN.slice(dataset.in, sel);
+                outBatch = NN.slice(dataset.out, sel);
+                
+                nn.clean(opt);
+                nn.feed(inBatch, opt);
+                nn.forward(opt);
+                nn.collect(outBatch, opt);
+
+                dataset.postTest(nn.blobs(out));
+            end
+            time = toc;
+
+            fprintf('[DNN Testing] Time = %.3f s, Error = ', time);
+            fprintf('%.3f ', nn.error / batchNum);
+            fprintf('\n');
+            dataset.showTestInfo();
         end
 
         function clean(nn, opt)
+            nn.error = zeros(sum(nn.output), 1);
             for i = 1:length(nn.blobs)
                 blob = nn.blobs(i);
                 blob.value = NN.zeros(blob.dimension, nn.batchSize, nn.gpu, nn.real);
                 blob.error = NN.zeros(blob.dimension, nn.batchSize, nn.gpu, nn.real);
-                blob.extra = NN.zeros(blob.dimension, nn.batchSize, nn.gpu, nn.real);
+                if(bitand(blob.type, Blob.DROPOUT))
+                    blob.dropout = NN.zeros(blob.dimension, nn.batchSize, nn.gpu, nn.real);
+                end
+                if(bitand(blob.type, Blob.LOSS_SQUARED) || bitand(blob.type, Blob.LOSS_SOFTMAX))
+                    blob.aux = NN.zeros(blob.dimension, nn.batchSize, nn.gpu, nn.real);
+                end
             end
         end
 
-        function forward(nn, inBatch, opt)
+        function feed(nn, inBatch, opt)
             in = find(nn.input);
             for i = 1:length(in)
                 nn.blobs(in(i)).value = inBatch{i};
             end
+        end
 
+        function forward(nn, opt)
             [from, to] = find(nn.link);
             for i = 1:length(from)
                 f = from(i);
@@ -134,48 +184,49 @@ classdef NN < handle
                 
                 if(bitand(blobTo.type, Blob.DROPOUT))
                     if(opt.flag == NN.TRAIN)
-                        if(isempty(blobTo.extra))
-                            blobTo.extra = (NN.rand(blobTo.dimension, nn.batchSize, nn.gpu, nn.real) > opt.dropout);
+                        if(isempty(blobTo.dropout))
+                            blobTo.dropout = (NN.rand(blobTo.dimension, nn.batchSize, nn.gpu, nn.real) > opt.dropout);
                         end
-                        blobTo.value = blobTo.value .* blobTo.extra;
+                        blobTo.value = blobTo.value .* blobTo.dropout;
                     elseif(opt.flag == NN.TEST)
                         blobTo.value = blobTo.value * (1 - opt.dropout);
                     end
                 end
 
                 if(bitand(blobTo.type, Blob.LOSS_SQUARED))
-                    %
+                    % No aux needed
                 end
 
                 if(bitand(blobTo.type, Blob.LOSS_SOFTMAX))
-                    blobTo.value = exp(bsxfun(@minus, blobTo.value, max(blobTo.value)));
-                    blobTo.value = bsxfun(@rdivide, blobTo.value, sum(blobTo.value));
+                    blobTo.aux = exp(bsxfun(@minus, blobTo.value, max(blobTo.value)));
+                    blobTo.aux = bsxfun(@rdivide, blobTo.aux, sum(blobTo.aux));
                 end
             end
         end
 
-        function backward(nn, outBatch, opt)
+        function collect(nn, outBatch, opt)
             out = find(nn.output);
-            nn.error = 0;
             for i = 1:length(out)
-                nn.blobs(out(i)).error = nn.blobs(out(i)).value - outBatch{i};
-                nn.error = nn.error + sum(sum(nn.blobs(out(i)).error .* nn.blobs(out(i)).error)) / nn.batchSize;
-            end
+                blob = nn.blobs(out(i));
+                if(bitand(blob.type, Blob.LOSS_SQUARED))
+                    blob.error = blob.value - outBatch{i};
+                    nn.error(i) = nn.error(i) + 1 / 2 * sum(sum(blob.error .* blob.error)) / nn.batchSize;
+                end
 
+                if(bitand(blob.type, Blob.LOSS_SOFTMAX))
+                    blob.error = blob.aux - outBatch{i};
+                    nn.error(i) = nn.error(i) - sum(sum(outBatch{i} .* log(blob.aux))) / nn.batchSize;
+                end
+            end
+        end
+
+        function backward(nn, opt)
             [from, to] = find(nn.link);
             for i = length(from):-1:1
                 f = from(i);
                 t = to(i);
                 blobFrom = nn.blobs(f);
                 blobTo = nn.blobs(t);
-
-                if(bitand(blobTo.type, Blob.LOSS_SQUARED))
-                    %
-                end
-
-                if(bitand(blobTo.type, Blob.LOSS_SOFTMAX))
-                    %
-                end
 
                 if(bitand(blobTo.type, Blob.OP_RELU))
                     blobTo.error = blobTo.error .* (blobTo.value > 0);
@@ -187,7 +238,7 @@ classdef NN < handle
                 end
                 
                 if(bitand(blobTo.type, Blob.DROPOUT))
-                    blobTo.error = blobTo.error .* blobTo.extra;
+                    blobTo.error = blobTo.error .* blobTo.dropout;
                 end
 
                 if(bitand(blobTo.type, Blob.LU))
@@ -214,31 +265,6 @@ classdef NN < handle
                 end
                 nn.weight{f, t} = nn.weight{f, t} - gradient;
             end
-        end
-
-        function test(nn, dataset, opt)
-            opt.flag = NN.TEST;
-
-            dataset.in = NN.cast(dataset.in, nn.real);
-            batchNum = ceil(dataset.sampleNum / opt.batchSize);
-
-            out = find(nn.output);
-            dataset.predict = cell(1, length(out));
-
-            tic;
-            for b = 1:batchNum
-                sel = (b - 1) * opt.batchSize + 1:min(b * opt.batchSize, dataset.sampleNum);
-                nn.batchSize = length(sel);
-                inBatch = NN.slice(dataset.in, sel);
-                
-                nn.clean(opt);
-                nn.forward(inBatch, opt);
-
-                outBatch = {nn.blobs(out).value};
-                dataset.predict = cellfun(@(x, y) [x, gather(y)], dataset.predict, outBatch, 'UniformOutput', false);
-            end
-            time = toc;
-            fprintf('[DNN Testing] Time = %.3f s\n', time);
         end
     end
     
