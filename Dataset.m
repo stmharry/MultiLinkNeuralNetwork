@@ -4,9 +4,11 @@ classdef Dataset < handle
         out;
         predict;
         sampleNum;
-
-        blobs;
-        opt;
+    end
+    
+    methods(Abstract, Static)
+        blobs = getBlobs();
+        opt = getOpt();
     end
 
     methods(Abstract)

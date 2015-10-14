@@ -31,14 +31,15 @@ classdef NN < handle
                 file = arg;
                 % TODO
             elseif(isa(arg, 'Dataset'))
-                nn.dataset = arg;
-                nn.blobs = arg.blobs;
-                nn.opt = arg.opt;
+                dataset = arg;
 
                 nn.gpu = (gpuDeviceCount > 0);
                 if(nn.gpu)
                     nn.real = 'double';
                 end
+                nn.dataset = dataset;
+                nn.blobs = dataset.getBlobs();
+                nn.opt = dataset.getOpt();
                 blobNum = length(nn.blobs);
                 
                 nn.input = sparse(blobNum, 1);
@@ -77,7 +78,6 @@ classdef NN < handle
             dataset = nn.dataset;
             opt = nn.opt;
 
-            dataset.getTrainData();
             opt.flag = NN.TRAIN;
             batchNum = ceil(dataset.sampleNum / opt.batchSize);
      
@@ -110,7 +110,6 @@ classdef NN < handle
             dataset = nn.dataset;
             opt = nn.opt;
 
-            dataset.getTestData();
             opt.flag = NN.TEST;
             batchNum = ceil(dataset.sampleNum / opt.batchSize);
 
