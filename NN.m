@@ -3,8 +3,8 @@ classdef NN < handle
         %SAVE_FIELD = {'gpu', 'real', 'blobs'};
 
         FLAG  = 0;
-        FLAG_TRAIN = NN.FLAG + 1;
-        FLAG_TEST  = NN.FLAG + 2;
+        TRAIN = NN.FLAG + 1;
+        TEST  = NN.FLAG + 2;
     end
 
     properties
@@ -71,37 +71,26 @@ classdef NN < handle
             end
         end
 
-        function train(nn, datum, opt)
-            opt.flag = NN.FLAG_TRAIN;
+        function train(nn, dataset, opt)
+            opt.flag = NN.TRAIN;
             
-            switch(opt.train)
-                case Opt.TRAIN_SLICE
-                    datum.in = NN.cast(datum.in, nn.real);
-                    datum.out = NN.cast(datum.out, nn.real);
-                    batchNum = ceil(datum.sampleNum / opt.batchSize);
-                case Opt.TRAIN_GENERATE
-                    batchNum = 1;
-            end
+            dataset.in = NN.cast(dataset.in, nn.real);
+            dataset.out = NN.cast(dataset.out, nn.real);
+            batchNum = ceil(dataset.sampleNum / opt.batchSize);
      
             for e = 1:opt.epochNum
                 tic;
-                if(opt.train == Opt.TRAIN_SLICE)
-                    permutation = randperm(datum.sampleNum);
-                end
+                permutation = randperm(dataset.sampleNum);
                 for b = 1:batchNum
-                    switch(opt.train)
-                        case Opt.TRAIN_SLICE
-                            sel = permutation((b - 1) * opt.batchSize + 1:min(b * opt.batchSize, datum.sampleNum));
-                            nn.batchSize = length(sel);
-                            datum.slice(sel);
-                        case Opt.TRAIN_GENERATE
-                            nn.batchSize = opt.batchSize;
-                            datum.generate(datum, opt);
-                    end
+                    sel = permutation((b - 1) * opt.batchSize + 1:min(b * opt.batchSize, dataset.sampleNum));
+                    nn.batchSize = length(sel);
+
+                    inBatch = NN.slice(dataset.in, sel);
+                    outBatch = NN.slice(dataset.out, sel);
 
                     nn.clean(opt);
-                    nn.forward(datum.inBatch, opt);
-                    nn.backward(datum.outBatch, opt);
+                    nn.forward(inBatch, opt);
+                    nn.backward(outBatch, opt);
                     nn.update(opt);
                 end
                 time = toc;
@@ -144,12 +133,12 @@ classdef NN < handle
                 end
                 
                 if(bitand(blobTo.type, Blob.DROPOUT))
-                    if(opt.flag == NN.FLAG_TRAIN)
+                    if(opt.flag == NN.TRAIN)
                         if(isempty(blobTo.extra))
                             blobTo.extra = (NN.rand(blobTo.dimension, nn.batchSize, nn.gpu, nn.real) > opt.dropout);
                         end
                         blobTo.value = blobTo.value .* blobTo.extra;
-                    elseif(opt.flag == NN.FLAG_TEST)
+                    elseif(opt.flag == NN.TEST)
                         blobTo.value = blobTo.value * (1 - opt.dropout);
                     end
                 end
@@ -227,30 +216,26 @@ classdef NN < handle
             end
         end
 
-        function test(nn, datum, opt)
-            opt.flag = NN.FLAG_TEST;
+        function test(nn, dataset, opt)
+            opt.flag = NN.TEST;
 
-            in = datum.in;
-            batchNum = ceil(datum.sampleNum / opt.batchSize);
+            dataset.in = NN.cast(dataset.in, nn.real);
+            batchNum = ceil(dataset.sampleNum / opt.batchSize);
 
             out = find(nn.output);
-            datum.predicted = cell(1, length(out));
+            dataset.predict = cell(1, length(out));
 
             tic;
             for b = 1:batchNum
-                sel = (b - 1) * opt.batchSize + 1:min(b * opt.batchSize, datum.sampleNum);
+                sel = (b - 1) * opt.batchSize + 1:min(b * opt.batchSize, dataset.sampleNum);
                 nn.batchSize = length(sel);
-
-                inBatch = NN.slice(in, sel);
+                inBatch = NN.slice(dataset.in, sel);
                 
                 nn.clean(opt);
                 nn.forward(inBatch, opt);
 
                 outBatch = {nn.blobs(out).value};
-                if(opt.test == Opt.TEST_MAX)
-                    outBatch = cellfun(@NN.maxIndex, outBatch, 'UniformOutput', false);
-                end
-                datum.predicted = cellfun(@(x, y) [x, gather(y)], datum.predicted, outBatch, 'UniformOutput', false);
+                dataset.predict = cellfun(@(x, y) [x, gather(y)], dataset.predict, outBatch, 'UniformOutput', false);
             end
             time = toc;
             fprintf('[DNN Testing] Time = %.3f s\n', time);
@@ -286,16 +271,12 @@ classdef NN < handle
             in = cellfun(@(x) cast(x, real), in, 'UniformOutput', false);
         end
 
-        function out = maxIndex(in)
-            [~, out] = max(in);
+        function out = pad(in, size, gpu, real)
+            out = [NN.ones(1, size, gpu, real); in];
         end
 
         function out = slice(in, sel)
             out = cellfun(@(x) x(:, sel), in, 'UniformOutput', false);
-        end
-
-        function out = pad(in, size, gpu, real)
-            out = [NN.ones(1, size, gpu, real); in];
         end
     end
 end

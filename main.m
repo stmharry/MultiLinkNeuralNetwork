@@ -1,11 +1,13 @@
-dataset = DatasetACDW();
+dataset = DatasetUSPS();
 
 blobs = dataset.getBlobs();
 opt = dataset.getOpt();
 nn = NN(blobs, opt);
 
-datum = dataset.getTrainDatum();
-nn.train(datum, opt);
+dataset.getTrainData();
+nn.train(dataset, opt);
 
-%datum = dataset.getTestDatum(datum);
-%nn.test(datum, opt);
+dataset.getTestData();
+nn.test(dataset, opt);
+
+dataset.showTestInfo();
