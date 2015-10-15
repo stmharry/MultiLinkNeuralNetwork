@@ -1,7 +1,5 @@
 classdef NN < handle
     properties(Constant)
-        %SAVE_FIELD = {'gpu', 'real', 'blobs'};
-
         FLAG  = 0;
         TRAIN = NN.FLAG + 1;
         TEST  = NN.FLAG + 2;
@@ -57,19 +55,21 @@ classdef NN < handle
 
                 nn.weight = cell(blobNum);
                 nn.gradient = cell(blobNum);
-           
-                [from, to] = find(nn.link);
-                for i = 1:length(from)
-                    f = from(i);
-                    t = to(i);
-         
-                    dimFrom = nn.blobs(f).dimension;
-                    dimTo = nn.blobs(t).dimension;
-         
-                    nn.weight{f, t} = ...
-                        [NN.zeros(dimTo, 1, nn.gpu, nn.real), ...
-                         (NN.rand(dimTo, dimFrom, nn.gpu, nn.real) - 0.5) * 2 / sqrt(dimFrom)];
-                    nn.gradient{f, t} = NN.zeros(dimTo, dimFrom + 1, nn.gpu, nn.real);
+          
+                if(nn.opt.init)
+                    [from, to] = find(nn.link);
+                    for i = 1:length(from)
+                        f = from(i);
+                        t = to(i);
+             
+                        dimFrom = nn.blobs(f).dimension;
+                        dimTo = nn.blobs(t).dimension;
+             
+                        nn.weight{f, t} = ...
+                            [NN.zeros(dimTo, 1, nn.gpu, nn.real), ...
+                             (NN.rand(dimTo, dimFrom, nn.gpu, nn.real) - 0.5) * 2 / sqrt(dimFrom)];
+                        nn.gradient{f, t} = NN.zeros(dimTo, dimFrom + 1, nn.gpu, nn.real);
+                    end
                 end
             end
         end
@@ -77,70 +77,68 @@ classdef NN < handle
         function train(nn)
             dataset = nn.dataset;
             opt = nn.opt;
+            out = find(nn.output);
 
             opt.flag = NN.TRAIN;
-            batchNum = ceil(dataset.sampleNum / opt.batchSize);
+            nn.error = zeros(length(out), 1);
+            reportNum = 1;
      
-            for e = 1:opt.epochNum
-                tic;
-                permutation = randperm(dataset.sampleNum);
-                for b = 1:batchNum
-                    sel = permutation((b - 1) * opt.batchSize + 1:min(b * opt.batchSize, dataset.sampleNum));
-                    nn.batchSize = length(sel);
-
-                    inBatch = NN.slice(dataset.in, sel);
-                    outBatch = NN.slice(dataset.out, sel);
-
-                    nn.clean(opt);
-                    nn.feed(inBatch, opt);
-                    nn.forward(opt);
-                    nn.collect(outBatch, opt);
-                    nn.backward(opt);
-                    nn.update(opt);
+            tic;
+            while(true)
+                [inBatch, outBatch, nn.batchSize] = dataset.getBatch(opt);
+                if(nn.batchSize == 0)
+                    break;
                 end
-                time = toc;
 
-                fprintf('[DNN Training] Epoch = %d, Time = %.3f s, Error = ', e, time);
-                fprintf('%.3f ', nn.error / batchNum);
-                fprintf('\n');
+                nn.clean();
+                nn.feed(inBatch);
+                nn.forward();
+                nn.collect(outBatch);
+                nn.backward();
+                nn.update();
+
+                while(dataset.totalSize >= reportNum * opt.reportInterval)
+                    time = toc;
+                    
+                    fprintf('[DNN Training] Sample = %d, Time = %.3f s, Error = %s\n', ...
+                        reportNum * opt.reportInterval, time, num2str(nn.error / dataset.totalSize, '%.3f '));
+
+                    nn.error = zeros(sum(nn.output), 1);
+                    reportNum = reportNum + 1;
+                    tic;
+                end
             end
         end
         
         function test(nn)
             dataset = nn.dataset;
             opt = nn.opt;
+            out = find(nn.output);
 
             opt.flag = NN.TEST;
-            batchNum = ceil(dataset.sampleNum / opt.batchSize);
-
-            out = find(nn.output);
-            dataset.predict = cell(1, length(out));
+            nn.error = zeros(length(out), 1);
 
             tic;
-            for b = 1:batchNum
-                sel = (b - 1) * opt.batchSize + 1:min(b * opt.batchSize, dataset.sampleNum);
-                nn.batchSize = length(sel);
-
-                inBatch = NN.slice(dataset.in, sel);
-                outBatch = NN.slice(dataset.out, sel);
+            while(true)
+                [inBatch, outBatch, nn.batchSize] = dataset.getBatch(opt); 
+                if(nn.batchSize == 0)
+                    break;
+                end
                 
-                nn.clean(opt);
-                nn.feed(inBatch, opt);
-                nn.forward(opt);
-                nn.collect(outBatch, opt);
+                nn.clean();
+                nn.feed(inBatch);
+                nn.forward();
+                nn.collect(outBatch);
 
                 dataset.postTest(nn.blobs(out));
             end
             time = toc;
 
-            fprintf('[DNN Testing] Time = %.3f s, Error = ', time);
-            fprintf('%.3f ', nn.error / batchNum);
-            fprintf('\n');
+            fprintf('[DNN Testing] Time = %.3f s, Error = %s\n', time, num2str(nn.error / dataset.sampleNum, '%.3f '));
             dataset.showTestInfo();
         end
 
-        function clean(nn, opt)
-            nn.error = zeros(sum(nn.output), 1);
+        function clean(nn)
             for i = 1:length(nn.blobs)
                 blob = nn.blobs(i);
                 blob.value = NN.zeros(blob.dimension, nn.batchSize, nn.gpu, nn.real);
@@ -154,14 +152,16 @@ classdef NN < handle
             end
         end
 
-        function feed(nn, inBatch, opt)
+        function feed(nn, inBatch)
             in = find(nn.input);
             for i = 1:length(in)
                 nn.blobs(in(i)).value = inBatch{i};
             end
         end
 
-        function forward(nn, opt)
+        function forward(nn)
+            opt = nn.opt;
+
             [from, to] = find(nn.link);
             for i = 1:length(from)
                 f = from(i);
@@ -203,23 +203,25 @@ classdef NN < handle
             end
         end
 
-        function collect(nn, outBatch, opt)
+        function collect(nn, outBatch)
+            opt = nn.opt;
+
             out = find(nn.output);
             for i = 1:length(out)
                 blob = nn.blobs(out(i));
                 if(bitand(blob.type, Blob.LOSS_SQUARED))
                     blob.error = blob.value - outBatch{i};
-                    nn.error(i) = nn.error(i) + 1 / 2 * sum(sum(blob.error .* blob.error)) / nn.batchSize;
+                    nn.error(i) = nn.error(i) + 1 / 2 * sum(sum(blob.error .* blob.error));
                 end
 
                 if(bitand(blob.type, Blob.LOSS_SOFTMAX))
                     blob.error = blob.aux - outBatch{i};
-                    nn.error(i) = nn.error(i) - sum(sum(outBatch{i} .* log(blob.aux))) / nn.batchSize;
+                    nn.error(i) = nn.error(i) - sum(sum(outBatch{i} .* log(blob.aux)));
                 end
             end
         end
 
-        function backward(nn, opt)
+        function backward(nn)
             [from, to] = find(nn.link);
             for i = length(from):-1:1
                 f = from(i);
@@ -246,7 +248,9 @@ classdef NN < handle
             end
         end
 
-        function update(nn, opt)
+        function update(nn)
+            opt = nn.opt;
+
             [from, to] = find(nn.link);
             for i = 1:length(from)
                 f = from(i);

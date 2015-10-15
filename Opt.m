@@ -1,8 +1,10 @@
 classdef Opt < handle
     properties
         batchSize = 256;
-        batchNum  = 128;
-        epochNum  = 10;
+        sampleNum = 8192;
+        reportInterval = 1024;
+
+        init      = true;
         dropout   = 0.5;
         learn     = 0.1;
         lambda    = 0;
