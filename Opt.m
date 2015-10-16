@@ -1,4 +1,10 @@
 classdef Opt < handle
+    properties(Constant)
+        FLAG  = 0;
+        TRAIN = Opt.FLAG + 1;
+        TEST  = Opt.FLAG + 2;
+    end
+
     properties
         batchSize = 256;
         sampleNum = 8192;

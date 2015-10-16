@@ -1,4 +1,10 @@
 classdef Dataset < handle
+    properties(Constant)
+        FLAG = 0;
+        TRAIN = Dataset.FLAG + 1;
+        TEST  = Dataset.FLAG + 2;
+    end
+
     properties
         in;
         out;
@@ -6,6 +12,8 @@ classdef Dataset < handle
         
         sampleNum;
         totalSize;
+
+        flag;
     end
     
     methods(Abstract, Static)
@@ -25,18 +33,20 @@ classdef Dataset < handle
 
     methods
         function getTrainData(dataset)
+            dataset.flag = Dataset.TRAIN;
             dataset.totalSize = 0;
         end
         function getTestData(dataset)
+            dataset.flag = Dataset.TEST;
             dataset.totalSize = 0;
             dataset.predict = cell(1, length(dataset.out));
         end
         function [inBatch, outBatch, batchSize] = getBatch(dataset, opt) 
             switch(opt.flag)
-                case NN.TRAIN
+                case Opt.TRAIN
                     batchSize = min([opt.sampleNum - dataset.totalSize, opt.batchSize]);
                     sel = randi(dataset.sampleNum, batchSize, 1);
-                case NN.TEST
+                case Opt.TEST
                     batchSize = min([dataset.sampleNum - dataset.totalSize, opt.batchSize]);
                     sel = dataset.totalSize + (1:batchSize);
             end
@@ -49,8 +59,6 @@ classdef Dataset < handle
             dataset.predict = cellfun(@(x, y) [x, y], dataset.predict, index, 'UniformOutput', false);
         end
         function showTestInfo(dataset)
-            %error = sum(dataset.Y ~= dataset.Y0(dataset.predict{1})) / dataset.sampleNum;
-            %fprintf('[DNN Testing] 0/1 Error = %.3f\n', error);
         end
     end
 end

@@ -20,8 +20,6 @@ classdef Blob < handle
         dropout;
         aux;
         
-        input;
-        output;
         next;
         prev;
     end
@@ -31,18 +29,8 @@ classdef Blob < handle
             blob.dimension = dimension;
             blob.type = type;
 
-            blob.input = false;
-            blob.output = false;
             blob.next = [];
             blob.prev = [];
-        end
-
-        function blob = setInput(blob)
-            blob.input = true;
-        end
-
-        function blob = setOutput(blob)
-            blob.output = true;
         end
 
         function next = setNext(blob, next)

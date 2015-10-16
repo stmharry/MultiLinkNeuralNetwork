@@ -1,10 +1,4 @@
 classdef NN < handle
-    properties(Constant)
-        FLAG  = 0;
-        TRAIN = NN.FLAG + 1;
-        TEST  = NN.FLAG + 2;
-    end
-
     properties
         gpu;
         real = 'double';
@@ -48,8 +42,8 @@ classdef NN < handle
                 for i = blobNum:-1:1
                     blob = nn.blobs(i);
                     blob.id = i;
-                    nn.input(i) = blob.input;
-                    nn.output(i) = blob.output;
+                    nn.input(i) = (bitand(blob.type, Blob.IO_INPUT) ~= 0);
+                    nn.output(i) = (bitand(blob.type, Blob.IO_OUTPUT) ~= 0);
                     for j = blob.next
                         nn.link(i, j.id) = true;
                     end
@@ -81,9 +75,12 @@ classdef NN < handle
         function train(nn)
             dataset = nn.dataset;
             opt = nn.opt;
-            out = find(nn.output);
+            if(dataset.flag ~= Dataset.TRAIN)
+                error('Training dataset not loaded!');
+            end
 
-            opt.flag = NN.TRAIN;
+            opt.flag = Opt.TRAIN;
+            out = find(nn.output);
             nn.error = zeros(length(out), 1);
             accumSize = 0;
      
@@ -105,9 +102,9 @@ classdef NN < handle
                 while(dataset.totalSize >= nn.totalSize + opt.reportInterval)
                     time = toc;
                     
-                    error = [(nn.error / accumSize)'; log(nn.error / accumSize)'];
+                    e = [(nn.error / accumSize)'; log(nn.error / accumSize)'];
                     fprintf('[DNN Training] Sample = %d, Time = %.3f s, Error = %s\n', ...
-                        nn.totalSize, time, num2str(error(:)', '%.3f (%.3f) '));
+                        nn.totalSize, time, num2str(e(:)', '%.3f (%.3f) '));
 
                     nn.error = zeros(sum(nn.output), 1);
                     nn.totalSize = nn.totalSize + opt.reportInterval;
@@ -120,9 +117,12 @@ classdef NN < handle
         function test(nn)
             dataset = nn.dataset;
             opt = nn.opt;
-            out = find(nn.output);
+            if(dataset.flag ~= Dataset.TEST)
+                error('Testing dataset not loaded!');
+            end
 
-            opt.flag = NN.TEST;
+            opt.flag = Opt.TEST;
+            out = find(nn.output);
             nn.error = zeros(length(out), 1);
 
             tic;
@@ -143,8 +143,8 @@ classdef NN < handle
             end
             time = toc;
 
-            error = [(nn.error / dataset.sampleNum)'; log(nn.error / dataset.sampleNum)'];
-            fprintf('[DNN Testing] Time = %.3f s, Error = %s\n', time, num2str(error(:)', '%.3f (%.3f) '));
+            e = [(nn.error / dataset.sampleNum)'; log(nn.error / dataset.sampleNum)'];
+            fprintf('[DNN Testing] Time = %.3f s, Error = %s\n', time, num2str(e(:)', '%.3f (%.3f) '));
             dataset.showTestInfo();
         end
 
@@ -192,18 +192,18 @@ classdef NN < handle
                 end
                 
                 if(bitand(blobTo.type, Blob.DROPOUT))
-                    if(opt.flag == NN.TRAIN)
+                    if(opt.flag == Opt.TRAIN)
                         if(isempty(blobTo.dropout))
                             blobTo.dropout = (NN.rand(blobTo.dimension, nn.batchSize, nn.gpu, nn.real) > opt.dropout);
                         end
                         blobTo.value = blobTo.value .* blobTo.dropout;
-                    elseif(opt.flag == NN.TEST)
+                    elseif(opt.flag == Opt.TEST)
                         blobTo.value = blobTo.value * (1 - opt.dropout);
                     end
                 end
 
                 if(bitand(blobTo.type, Blob.LOSS_SQUARED))
-                    % No aux needed
+                
                 end
 
                 if(bitand(blobTo.type, Blob.LOSS_SOFTMAX))
