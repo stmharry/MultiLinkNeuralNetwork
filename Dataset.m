@@ -34,13 +34,12 @@ classdef Dataset < handle
         function [inBatch, outBatch, batchSize] = getBatch(dataset, opt) 
             switch(opt.flag)
                 case NN.TRAIN
-                    batchSize = min([opt.sampleNum - dataset.totalSize; opt.batchSize]);
+                    batchSize = min([opt.sampleNum - dataset.totalSize, opt.batchSize]);
                     sel = randi(dataset.sampleNum, batchSize, 1);
                 case NN.TEST
-                    batchSize = min([dataset.sampleNum - dataset.totalSize; opt.batchSize]);
+                    batchSize = min([dataset.sampleNum - dataset.totalSize, opt.batchSize]);
                     sel = dataset.totalSize + (1:batchSize);
             end
-
             dataset.totalSize = dataset.totalSize + batchSize;
             inBatch = cellfun(@(x) Dataset.slice(x, sel), dataset.in, 'UniformOutput', false);
             outBatch = cellfun(@(x) Dataset.slice(x, sel), dataset.out, 'UniformOutput', false);
@@ -50,8 +49,8 @@ classdef Dataset < handle
             dataset.predict = cellfun(@(x, y) [x, y], dataset.predict, index, 'UniformOutput', false);
         end
         function showTestInfo(dataset)
-            error = sum(dataset.Y ~= dataset.Y0(dataset.predict{1})) / dataset.sampleNum;
-            fprintf('[DNN Testing] 0/1 Error = %.3f\n', error);
+            %error = sum(dataset.Y ~= dataset.Y0(dataset.predict{1})) / dataset.sampleNum;
+            %fprintf('[DNN Testing] 0/1 Error = %.3f\n', error);
         end
     end
 end

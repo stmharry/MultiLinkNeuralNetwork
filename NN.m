@@ -18,6 +18,8 @@ classdef NN < handle
         link;
 
         batchSize;
+        totalSize;
+
         weight;
         gradient;
         error;
@@ -53,6 +55,8 @@ classdef NN < handle
                     end
                 end
 
+                nn.totalSize = 0;
+
                 nn.weight = cell(blobNum);
                 nn.gradient = cell(blobNum);
           
@@ -81,7 +85,7 @@ classdef NN < handle
 
             opt.flag = NN.TRAIN;
             nn.error = zeros(length(out), 1);
-            reportNum = 1;
+            accumSize = 0;
      
             tic;
             while(true)
@@ -97,14 +101,17 @@ classdef NN < handle
                 nn.backward();
                 nn.update();
 
-                while(dataset.totalSize >= reportNum * opt.reportInterval)
+                accumSize = accumSize + nn.batchSize;
+                while(dataset.totalSize >= nn.totalSize + opt.reportInterval)
                     time = toc;
                     
+                    error = [(nn.error / accumSize)'; log(nn.error / accumSize)'];
                     fprintf('[DNN Training] Sample = %d, Time = %.3f s, Error = %s\n', ...
-                        reportNum * opt.reportInterval, time, num2str(nn.error / dataset.totalSize, '%.3f '));
+                        nn.totalSize, time, num2str(error(:)', '%.3f (%.3f) '));
 
                     nn.error = zeros(sum(nn.output), 1);
-                    reportNum = reportNum + 1;
+                    nn.totalSize = nn.totalSize + opt.reportInterval;
+                    accumSize = 0;
                     tic;
                 end
             end
@@ -128,13 +135,16 @@ classdef NN < handle
                 nn.clean();
                 nn.feed(inBatch);
                 nn.forward();
-                nn.collect(outBatch);
+                if(opt.collect)
+                    nn.collect(outBatch);
+                end
 
                 dataset.postTest(nn.blobs(out));
             end
             time = toc;
 
-            fprintf('[DNN Testing] Time = %.3f s, Error = %s\n', time, num2str(nn.error / dataset.sampleNum, '%.3f '));
+            error = [(nn.error / dataset.sampleNum)'; log(nn.error / dataset.sampleNum)'];
+            fprintf('[DNN Testing] Time = %.3f s, Error = %s\n', time, num2str(error(:)', '%.3f (%.3f) '));
             dataset.showTestInfo();
         end
 
@@ -204,8 +214,6 @@ classdef NN < handle
         end
 
         function collect(nn, outBatch)
-            opt = nn.opt;
-
             out = find(nn.output);
             for i = 1:length(out)
                 blob = nn.blobs(out(i));

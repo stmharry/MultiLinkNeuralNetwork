@@ -1,5 +1,6 @@
-dataset = DatasetUSPS();
+dataset = DatasetAD();
 
+%
 nn = NN(dataset);
 dataset.getTrainData();
 nn.train();

@@ -5,6 +5,7 @@ classdef Opt < handle
         reportInterval = 1024;
 
         init      = true;
+        collect   = true;
         dropout   = 0.5;
         learn     = 0.1;
         lambda    = 0;
