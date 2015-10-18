@@ -3,6 +3,10 @@ classdef Opt < handle
         FLAG  = 0;
         TRAIN = Opt.FLAG + 1;
         TEST  = Opt.FLAG + 2;
+
+        PROVIDE = 3;
+        WHOLE = Opt.PROVIDE + 1;
+        BATCH = Opt.PROVIDE + 2;
     end
 
     properties
@@ -10,7 +14,7 @@ classdef Opt < handle
         sampleNum = 8192;
         reportInterval = 1024;
 
-        init      = true;
+        provide   = Opt.WHOLE;
         collect   = true;
         dropout   = 0.5;
         learn     = 0.1;

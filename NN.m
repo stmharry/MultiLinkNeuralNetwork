@@ -10,6 +10,7 @@ classdef NN < handle
         input;
         output;
         link;
+        linkQueue;
 
         batchSize;
         totalSize;
@@ -29,86 +30,117 @@ classdef NN < handle
 
                 nn.gpu = (gpuDeviceCount > 0);
                 if(nn.gpu)
-                    nn.real = 'double';
+                    nn.real = 'single';
                 end
                 nn.dataset = dataset;
                 nn.blobs = dataset.getBlobs();
                 nn.opt = dataset.getOpt();
-                blobNum = length(nn.blobs);
                 
+                blobNum = length(nn.blobs);
                 nn.input = sparse(blobNum, 1);
                 nn.output = sparse(blobNum, 1);
                 nn.link = sparse(blobNum, blobNum);
-                for i = blobNum:-1:1
-                    blob = nn.blobs(i);
-                    blob.id = i;
-                    nn.input(i) = (bitand(blob.type, Blob.IO_INPUT) ~= 0);
-                    nn.output(i) = (bitand(blob.type, Blob.IO_OUTPUT) ~= 0);
-                    for j = blob.next
-                        nn.link(i, j.id) = true;
-                    end
+                for i = 1:blobNum
+                    nn.blobs(i).id = i;
                 end
+                nn.cache();
 
                 nn.totalSize = 0;
-
                 nn.weight = cell(blobNum);
                 nn.gradient = cell(blobNum);
           
-                if(nn.opt.init)
-                    [from, to] = find(nn.link);
-                    for i = 1:length(from)
-                        f = from(i);
-                        t = to(i);
-             
-                        dimFrom = nn.blobs(f).dimension;
-                        dimTo = nn.blobs(t).dimension;
-             
-                        nn.weight{f, t} = ...
-                            [NN.zeros(dimTo, 1, nn.gpu, nn.real), ...
-                             (NN.rand(dimTo, dimFrom, nn.gpu, nn.real) - 0.5) * 2 / sqrt(dimFrom)];
-                        nn.gradient{f, t} = NN.zeros(dimTo, dimFrom + 1, nn.gpu, nn.real);
+                [from, to] = find(nn.link);
+                for i = 1:length(from)
+                    f = from(i);
+                    t = to(i);
+         
+                    dimFrom = nn.blobs(f).dimension;
+                    dimTo = nn.blobs(t).dimension;
+         
+                    nn.weight{f, t} = ...
+                        [NN.zeros(dimTo, 1, nn.gpu, nn.real), ...
+                         (NN.rand(dimTo, dimFrom, nn.gpu, nn.real) - 0.5) * 2 / sqrt(dimFrom)];
+                    nn.gradient{f, t} = NN.zeros(dimTo, dimFrom + 1, nn.gpu, nn.real);
+                end
+            end
+        end
+
+        function cache(nn)
+            blobNum = length(nn.blobs);
+
+            for i = 1:blobNum
+                blob = nn.blobs(i);
+                nn.input(i) = (blob.type.IO == Blob.IO_INPUT); 
+                nn.output(i) = (blob.type.IO == Blob.IO_OUTPUT);
+                for blobJ = blob.next
+                    nn.link(i, blobJ.id) = true;
+                end
+            end
+
+            nn.linkQueue = struct([]);
+            out = find(nn.output);
+            if(length(out))
+                for j = out'
+                    blobJ = nn.blobs(j);
+                    for blobI = blobJ.prev
+                        nn.linkQueue = [nn.linkQueue, struct('from', blobI.id, 'to', j)];
                     end
                 end
             end
+
+            pos = 1;
+            isLinkQueued = sparse(blobNum, blobNum);
+            while(pos <= length(nn.linkQueue))
+                j = nn.linkQueue(pos).from;
+                blobJ = nn.blobs(j);
+                if(blobJ.type.IO ~= Blob.IO_INPUT)
+                    for blobI = blobJ.prev
+                        if(~isLinkQueued(blobI.id, j))
+                            nn.linkQueue = [nn.linkQueue, struct('from', blobI.id, 'to', j)];
+                            isLinkQueued(blobI.id, j) = true;
+                        end
+                    end
+                end
+                pos = pos + 1;
+            end
+            nn.linkQueue = fliplr(nn.linkQueue);
         end
 
         function train(nn)
             dataset = nn.dataset;
             opt = nn.opt;
-            if(dataset.flag ~= Dataset.TRAIN)
-                error('Training dataset not loaded!');
-            end
 
             opt.flag = Opt.TRAIN;
-            out = find(nn.output);
-            nn.error = zeros(length(out), 1);
+            dataset.configure(opt);
+
+            nn.error = zeros(sum(nn.output), 1);
             accumSize = 0;
      
             tic;
             while(true)
-                [inBatch, outBatch, nn.batchSize] = dataset.getBatch(opt);
+                nn.batchSize = dataset.getDataBatch(opt);
                 if(nn.batchSize == 0)
                     break;
                 end
 
                 nn.clean();
-                nn.feed(inBatch);
+                nn.feed(dataset.inBatch);
                 nn.forward();
-                nn.collect(outBatch);
+                nn.collect(dataset.outBatch);
                 nn.backward();
                 nn.update();
 
                 accumSize = accumSize + nn.batchSize;
                 while(dataset.totalSize >= nn.totalSize + opt.reportInterval)
                     time = toc;
+                    nn.totalSize = nn.totalSize + opt.reportInterval;
                     
                     e = [(nn.error / accumSize)'; log(nn.error / accumSize)'];
                     fprintf('[DNN Training] Sample = %d, Time = %.3f s, Error = %s\n', ...
                         nn.totalSize, time, num2str(e(:)', '%.3f (%.3f) '));
 
-                    nn.error = zeros(sum(nn.output), 1);
-                    nn.totalSize = nn.totalSize + opt.reportInterval;
                     accumSize = 0;
+                    nn.error = zeros(sum(nn.output), 1);
                     tic;
                 end
             end
@@ -117,26 +149,25 @@ classdef NN < handle
         function test(nn)
             dataset = nn.dataset;
             opt = nn.opt;
-            if(dataset.flag ~= Dataset.TEST)
-                error('Testing dataset not loaded!');
-            end
 
             opt.flag = Opt.TEST;
+            dataset.configure(opt);
+
             out = find(nn.output);
-            nn.error = zeros(length(out), 1);
+            nn.error = zeros(sum(nn.output), 1);
 
             tic;
             while(true)
-                [inBatch, outBatch, nn.batchSize] = dataset.getBatch(opt); 
+                nn.batchSize = dataset.getDataBatch(opt); 
                 if(nn.batchSize == 0)
                     break;
                 end
                 
                 nn.clean();
-                nn.feed(inBatch);
+                nn.feed(dataset.inBatch);
                 nn.forward();
                 if(opt.collect)
-                    nn.collect(outBatch);
+                    nn.collect(dataset.outBatch);
                 end
 
                 dataset.postTest(nn.blobs(out));
@@ -153,10 +184,10 @@ classdef NN < handle
                 blob = nn.blobs(i);
                 blob.value = NN.zeros(blob.dimension, nn.batchSize, nn.gpu, nn.real);
                 blob.error = NN.zeros(blob.dimension, nn.batchSize, nn.gpu, nn.real);
-                if(bitand(blob.type, Blob.DROPOUT))
+                if(blob.type.DROPOUT ~= Blob.DROPOUT_DISABLE)
                     blob.dropout = NN.zeros(blob.dimension, nn.batchSize, nn.gpu, nn.real);
                 end
-                if(bitand(blob.type, Blob.LOSS_SQUARED) || bitand(blob.type, Blob.LOSS_SOFTMAX))
+                if(blob.type.LOSS ~= Blob.LOSS_DISABLE)
                     blob.aux = NN.zeros(blob.dimension, nn.batchSize, nn.gpu, nn.real);
                 end
             end
@@ -179,36 +210,43 @@ classdef NN < handle
                 blobFrom = nn.blobs(f);
                 blobTo = nn.blobs(t);
                 
-                if(bitand(blobTo.type, Blob.LU))
-                    blobTo.value = blobTo.value + nn.weight{f, t} * NN.pad(blobFrom.value, nn.batchSize, nn.gpu, nn.real);
+                switch(blobTo.type.LU)
+                    case Blob.LU_DISABLE
+                        error('No connection!');
+                    case Blob.LU
+                        blobTo.value = blobTo.value + nn.weight{f, t} * NN.pad(blobFrom.value, nn.batchSize, nn.gpu, nn.real);
+                end
+    
+                switch(blobTo.type.OP)
+                    case Blob.OP_DISABLE
+                    case Blob.OP_RELU
+                        blobTo.value = blobTo.value .* (blobTo.value > 0);
+                    case Blob.OP_FAST_SIGMOID
+                        blobTo.value = blobTo.value ./ (1 + abs(blobTo.value));
                 end
 
-                if(bitand(blobTo.type, Blob.OP_RELU))
-                    blobTo.value = blobTo.value .* (blobTo.value > 0);
-                end
-
-                if(bitand(blobTo.type, Blob.OP_FAST_SIGMOID))
-                    blobTo.value = blobTo.value ./ (1 + abs(blobTo.value));
-                end
-                
-                if(bitand(blobTo.type, Blob.DROPOUT))
-                    if(opt.flag == Opt.TRAIN)
-                        if(isempty(blobTo.dropout))
-                            blobTo.dropout = (NN.rand(blobTo.dimension, nn.batchSize, nn.gpu, nn.real) > opt.dropout);
+                switch(blobTo.type.DROPOUT)
+                    case Blob.DROPOUT_DISABLE
+                    case Blob.DROPOUT
+                        if(opt.flag == Opt.TRAIN)
+                            if(isempty(blobTo.dropout))
+                                blobTo.dropout = (NN.rand(blobTo.dimension, nn.batchSize, nn.gpu, nn.real) > opt.dropout);
+                            end
+                            blobTo.value = blobTo.value .* blobTo.dropout;
+                        elseif(opt.flag == Opt.TEST)
+                            blobTo.value = blobTo.value * (1 - opt.dropout);
                         end
-                        blobTo.value = blobTo.value .* blobTo.dropout;
-                    elseif(opt.flag == Opt.TEST)
-                        blobTo.value = blobTo.value * (1 - opt.dropout);
+                end
+
+                if(blobTo.type.IO == Blob.IO_OUTPUT)
+                    switch(blobTo.type.LOSS)
+                        case Blob.LOSS_DISABLE
+                            error('IO_OUTPUT without LOSS set!')
+                        case Blob.LOSS_SQUARED
+                        case Blob.LOSS_SOFTMAX
+                            blobTo.aux = exp(bsxfun(@minus, blobTo.value, max(blobTo.value)));
+                            blobTo.aux = bsxfun(@rdivide, blobTo.aux, sum(blobTo.aux));
                     end
-                end
-
-                if(bitand(blobTo.type, Blob.LOSS_SQUARED))
-                
-                end
-
-                if(bitand(blobTo.type, Blob.LOSS_SOFTMAX))
-                    blobTo.aux = exp(bsxfun(@minus, blobTo.value, max(blobTo.value)));
-                    blobTo.aux = bsxfun(@rdivide, blobTo.aux, sum(blobTo.aux));
                 end
             end
         end
@@ -217,14 +255,15 @@ classdef NN < handle
             out = find(nn.output);
             for i = 1:length(out)
                 blob = nn.blobs(out(i));
-                if(bitand(blob.type, Blob.LOSS_SQUARED))
-                    blob.error = blob.value - outBatch{i};
-                    nn.error(i) = nn.error(i) + 1 / 2 * sum(sum(blob.error .* blob.error));
-                end
 
-                if(bitand(blob.type, Blob.LOSS_SOFTMAX))
-                    blob.error = blob.aux - outBatch{i};
-                    nn.error(i) = nn.error(i) - sum(sum(outBatch{i} .* log(blob.aux)));
+                switch(blob.type.LOSS)
+                    case Blob.LOSS_DISABLE
+                    case Blob.LOSS_SQUARED
+                        blob.error = blob.value - outBatch{i};
+                        nn.error(i) = nn.error(i) + 1 / 2 * sum(sum(blob.error .* blob.error));
+                    case Blob.LOSS_SOFTMAX
+                        blob.error = blob.aux - outBatch{i};
+                        nn.error(i) = nn.error(i) - sum(sum(outBatch{i} .* log(blob.aux)));
                 end
             end
         end
@@ -237,21 +276,25 @@ classdef NN < handle
                 blobFrom = nn.blobs(f);
                 blobTo = nn.blobs(t);
 
-                if(bitand(blobTo.type, Blob.OP_RELU))
-                    blobTo.error = blobTo.error .* (blobTo.value > 0);
+                switch(blobTo.type.OP)
+                    case Blob.OP_DISABLE
+                    case Blob.OP_RELU
+                        blobTo.error = blobTo.error .* (blobTo.value > 0);
+                    case Blob.OP_FAST_SIGMOID
+                        temp = 1 - abs(blobTo.value);
+                        blobTo.error = blobTo.error .* temp .* temp;
                 end
 
-                if(bitand(blobTo.type, Blob.OP_FAST_SIGMOID))
-                    temp = 1 - abs(blobTo.value);
-                    blobTo.error = blobTo.error .* temp .* temp;
-                end
-                
-                if(bitand(blobTo.type, Blob.DROPOUT))
-                    blobTo.error = blobTo.error .* blobTo.dropout;
+                switch(blobTo.type.DROPOUT)
+                    case Blob.DROPOUT_DISABLE
+                    case Blob.DROPOUT
+                        blobTo.error = blobTo.error .* blobTo.dropout;
                 end
 
-                if(bitand(blobTo.type, Blob.LU))
-                    blobFrom.error = blobFrom.error + nn.weight{f, t}(:, 2:end)' * blobTo.error;
+                switch(blobTo.type.LU)
+                    case Blob.LU_DISABLE
+                    case Blob.LU
+                        blobFrom.error = blobFrom.error + nn.weight{f, t}(:, 2:end)' * blobTo.error;
                 end
             end
         end
@@ -304,16 +347,8 @@ classdef NN < handle
             end
         end
         
-        function in = cast(in, real)
-            in = cellfun(@(x) cast(x, real), in, 'UniformOutput', false);
-        end
-
         function out = pad(in, size, gpu, real)
             out = [NN.ones(1, size, gpu, real); in];
-        end
-
-        function out = slice(in, sel)
-            out = cellfun(@(x) x(:, sel), in, 'UniformOutput', false);
         end
     end
 end
