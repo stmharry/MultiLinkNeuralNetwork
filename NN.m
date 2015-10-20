@@ -2,6 +2,7 @@ classdef NN < handle
     properties
         gpu;
         real = 'double';
+        epsilon = 1e-9;
 
         dataset;
         blobs;
@@ -60,7 +61,7 @@ classdef NN < handle
                     nn.weight{f, t} = ...
                         [NN.zeros(dimTo, 1, nn.gpu, nn.real), ...
                          (NN.rand(dimTo, dimFrom, nn.gpu, nn.real) - 0.5) * 2 / sqrt(dimFrom)];
-                    nn.gradient{f, t} = NN.zeros(dimTo, dimFrom + 1, nn.gpu, nn.real);
+                    nn.gradient{f, t} = nn.epsilon * NN.ones(dimTo, dimFrom + 1, nn.gpu, nn.real);
                 end
             end
         end
@@ -106,6 +107,11 @@ classdef NN < handle
             nn.linkQueue = fliplr(nn.linkQueue);
         end
 
+        function trainFor(nn, extraSampleNum)
+            nn.opt.sampleNum = nn.opt.sampleNum + extraSampleNum;
+            nn.train();
+        end
+
         function train(nn)
             dataset = nn.dataset;
             opt = nn.opt;
@@ -115,7 +121,12 @@ classdef NN < handle
 
             nn.error = zeros(sum(nn.output), 1);
             accumSize = 0;
-     
+    
+            tcprintf('red', '[ DNN Training ]\n');
+            tcprintf('blue', '+--------------+---------------+----------------------------------+ \n');
+            tcprintf('blue', '| Sample Count | Time Used (s) | Error                            | \n');
+            tcprintf('blue', '+--------------+---------------+----------------------------------+ \n');
+
             tic;
             while(true)
                 nn.batchSize = dataset.getDataBatch(opt);
@@ -135,15 +146,15 @@ classdef NN < handle
                     time = toc;
                     nn.totalSize = nn.totalSize + opt.reportInterval;
                     
-                    e = [(nn.error / accumSize)'; log(nn.error / accumSize)'];
-                    fprintf('[DNN Training] Sample = %d, Time = %.3f s, Error = %s\n', ...
-                        nn.totalSize, time, num2str(e(:)', '%.3f (%.3f) '));
+                    tcprintf('blue', '| %12d | %13.3f | %-32s | \n', ...
+                        nn.totalSize, time, num2str(nn.error / accumSize, '%.2E '));
 
                     accumSize = 0;
                     nn.error = zeros(sum(nn.output), 1);
                     tic;
                 end
             end
+            tcprintf('blue', '+--------------+---------------+----------------------------------+ \n');
         end
         
         function test(nn)
@@ -152,9 +163,15 @@ classdef NN < handle
 
             opt.flag = Opt.TEST;
             dataset.configure(opt);
+            dataset.preTest();
 
             out = find(nn.output);
             nn.error = zeros(sum(nn.output), 1);
+            
+            tcprintf('red', '[ DNN Testing ]\n');
+            tcprintf('blue', '+--------------+---------------+----------------------------------+ \n');
+            tcprintf('blue', '| Sample Count | Time Used (s) | Error                            | \n');
+            tcprintf('blue', '+--------------+---------------+----------------------------------+ \n');
 
             tic;
             while(true)
@@ -170,12 +187,19 @@ classdef NN < handle
                     nn.collect(dataset.outBatch);
                 end
 
-                dataset.postTest(nn.blobs(out));
+                dataset.processTestBatch(nn.blobs(out));
             end
             time = toc;
 
-            e = [(nn.error / dataset.sampleNum)'; log(nn.error / dataset.sampleNum)'];
-            fprintf('[DNN Testing] Time = %.3f s, Error = %s\n', time, num2str(e(:)', '%.3f (%.3f) '));
+            if(opt.collect)
+                errorStr = num2str(nn.error / dataset.totalSize, '%.2E ');
+            else
+                errorStr = 'N/A';
+            end
+            tcprintf('blue', '| %12d | %13.3f | %-32s | \n', ...
+                dataset.totalSize, time, errorStr);
+            tcprintf('blue', '+--------------+---------------+----------------------------------+ \n');
+            tcprintf('red', '[ DNN Testing Extra ]\n');
             dataset.showTestInfo();
         end
 
@@ -243,7 +267,8 @@ classdef NN < handle
                         case Blob.LOSS_DISABLE
                             error('IO_OUTPUT without LOSS set!')
                         case Blob.LOSS_SQUARED
-                        case Blob.LOSS_SOFTMAX
+                        case Blob.LOSS_SQUARED_RATIO
+                        case Blob.LOSS_CROSS_ENTROPY
                             blobTo.aux = exp(bsxfun(@minus, blobTo.value, max(blobTo.value)));
                             blobTo.aux = bsxfun(@rdivide, blobTo.aux, sum(blobTo.aux));
                     end
@@ -260,11 +285,17 @@ classdef NN < handle
                     case Blob.LOSS_DISABLE
                     case Blob.LOSS_SQUARED
                         blob.error = blob.value - outBatch{i};
-                        nn.error(i) = nn.error(i) + 1 / 2 * sum(sum(blob.error .* blob.error));
-                    case Blob.LOSS_SOFTMAX
+                        nn.error(i) = nn.error(i) + gather(1 / 2 * sum(sum(blob.error .* blob.error)));
+                    case Blob.LOSS_SQUARED_RATIO
+                        temp = outBatch{i}(1, :) - 1 / 2;
+                        blob.error = bsxfun(@times, blob.value - outBatch{i}(2:end, :), temp); 
+                        nn.error(i) = nn.error(i) + gather(sum(log(sum(blob.error .* blob.error)) .* temp));
+                    case Blob.LOSS_CROSS_ENTROPY
                         blob.error = blob.aux - outBatch{i};
-                        nn.error(i) = nn.error(i) - sum(sum(outBatch{i} .* log(blob.aux)));
+                        nn.error(i) = nn.error(i) - gather(sum(sum(outBatch{i} .* log(blob.aux))));
                 end
+
+                blob.error = blob.weight * blob.error;
             end
         end
 
@@ -309,13 +340,25 @@ classdef NN < handle
                 blobFrom = nn.blobs(f);
                 blobTo = nn.blobs(t);
 
-                gradient = (opt.learn / nn.batchSize) * blobTo.error * (NN.pad(blobFrom.value, nn.batchSize, nn.gpu, nn.real))';
-                if(opt.lambda)
-                    gradient = gradient + opt.lambda * nn.weight{f, t};
+                gradient = blobTo.error * (NN.pad(blobFrom.value, nn.batchSize, nn.gpu, nn.real))' / nn.batchSize;
+                switch(opt.gradient)
+                    case Opt.SGD
+                        % V+ = momentum * V + learn * gradient
+                        % W+ = W - V+
+                        gradient = opt.learn * gradient;
+                        if(opt.momentum)
+                            gradient = gradient + opt.momentum * nn.gradient{f, t};
+                        end
+                        nn.gradient{f, t} = gradient;
+                    case Opt.ADAGRAD
+                        % V+ = V + gradient .* gradient
+                        % W+ = W - learn * gradient ./ sqrt(V+)
+                        nn.gradient{f, t} = nn.gradient{f, t} + gradient .* gradient;
+                        gradient = opt.learn * gradient ./ sqrt(nn.gradient{f, t});
                 end
-                if(opt.momentum)
-                    gradient = gradient + opt.momentum * nn.gradient{f, t};
-                    nn.gradient{f, t} = gradient;
+                % W+ = W - (gradient + lambda * W)
+                if(opt.lambda)
+                    nn.weight{f, t} = (1 - opt.lambda) * nn.weight{f, t};
                 end
                 nn.weight{f, t} = nn.weight{f, t} - gradient;
             end

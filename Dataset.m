@@ -34,12 +34,7 @@ classdef Dataset < handle
             dataset.flag = 0;
         end
         function configure(dataset, opt)
-            if((dataset.flag ~= opt.flag))
-                switch(opt.flag)
-                    case Opt.TRAIN
-                    case Opt.TEST
-                        dataset.predict = cell(1);
-                end
+            if(dataset.flag ~= opt.flag)
                 if(opt.provide == Opt.WHOLE)
                     dataset.getDataWhole(opt);
                 end
@@ -63,7 +58,10 @@ classdef Dataset < handle
             dataset.inBatch = cellfun(@(x) Dataset.slice(x, sel), dataset.in, 'UniformOutput', false);
             dataset.outBatch = cellfun(@(x) Dataset.slice(x, sel), dataset.out, 'UniformOutput', false);
         end
-        function postTest(dataset, blobs)
+        function preTest(dataset)
+            dataset.totalSize = 0;
+        end
+        function processTestBatch(dataset, blobs)
             index = cellfun(@Dataset.maxIndex, {blobs.aux}, 'UniformOutput', false);
             dataset.predict = cellfun(@(x, y) [x, y], dataset.predict, index, 'UniformOutput', false);
         end

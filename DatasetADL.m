@@ -11,6 +11,7 @@ classdef DatasetADL < Dataset
         dslr;
         indices;
         labels;
+        match;
 
         phase;
     end
@@ -22,7 +23,7 @@ classdef DatasetADL < Dataset
                 Blob(  31, [Blob.LU, Blob.OP_RELU]), ...
                 Blob( 600, [Blob.LU, Blob.LOSS_SQUARED]) ...
                 Blob(1024, [Blob.LU, Blob.OP_RELU]), ...
-                Blob(  31, [Blob.LU, Blob.LOSS_SOFTMAX]), ...
+                Blob(  31, [Blob.LU, Blob.LOSS_CROSS_ENTROPY]), ...
             ];
             blobs(1).setNext(blobs(2)) ...
                     .setNext(blobs(3)) ...
@@ -31,13 +32,15 @@ classdef DatasetADL < Dataset
         end
         function opt = getOpt()
             opt = Opt();
-            opt.batchSize = 256;
-            opt.sampleNum = 3000;
+            opt.batchSize      = 256;
+            opt.sampleNum      = 0;
             opt.reportInterval = 1000;
-            opt.provide = Opt.BATCH;
-            opt.collect = true;
-            opt.learn = 0.005;
-            opt.lambda = 0.001;
+
+            opt.provide  = Opt.BATCH;
+            opt.gradient = Opt.ADAGRAD;
+
+            opt.learn  = 0.01;
+            opt.lambda = 0.005;
         end
     end
 
@@ -75,36 +78,40 @@ classdef DatasetADL < Dataset
             dataset.dslr = dslr;
             dataset.indices = indices;
             dataset.labels = labels;
+            dataset.match = find(bsxfun(@eq, amazon.train_labels', dslr.train_labels));
         end
         function configureNN(dataset, nn, phase)
+            dataset.phase = phase;
             switch(phase)
                 case DatasetADL.AD
                     nn.blobs(1).type.IO = Blob.IO_INPUT;
                     nn.blobs(3).type.IO = Blob.IO_OUTPUT;
                     nn.blobs(5).type.IO = Blob.IO_DISABLE;
+                    nn.opt.collect = false;
                 case DatasetADL.DL
                     nn.blobs(1).type.IO = Blob.IO_DISABLE;
                     nn.blobs(3).type.IO = Blob.IO_INPUT;
                     nn.blobs(5).type.IO = Blob.IO_OUTPUT;
+                    nn.blobs(5).weight = 1;
+                    nn.opt.collect = true;
                 case DatasetADL.ADL
                     nn.blobs(1).type.IO = Blob.IO_INPUT;
                     nn.blobs(3).type.IO = Blob.IO_OUTPUT;
                     nn.blobs(5).type.IO = Blob.IO_OUTPUT;
-            end
-            
-            dataset.phase = phase;
+                    nn.blobs(5).weight = 0.5;
+                    nn.opt.collect = true;
+            end 
             nn.cache();
         end
         function batchSize = getDataBatch(dataset, opt) 
-            fprintf('.');
             switch(opt.flag)
                 case Opt.TRAIN
                     batchSize = min([opt.sampleNum - dataset.totalSize, opt.batchSize]);
                     switch(dataset.phase)
                         case {DatasetADL.AD, DatasetADL.ADL}
-                            selLabel = dataset.labels(randi(length(dataset.labels), batchSize, 1));
-                            [~, sourceSel] = max(bsxfun(@eq, dataset.amazon.train_labels', selLabel) + rand(dataset.indices.source_num, batchSize));
-                            [~, targetSel] = max(bsxfun(@eq, dataset.dslr.train_labels', selLabel) + rand(dataset.indices.target_train_num, batchSize));
+                            sel = dataset.match(randi(length(dataset.match), batchSize, 1));
+                            targetSel = floor((sel - 1) / dataset.indices.source_num) + 1;
+                            sourceSel = sel - dataset.indices.source_num * (targetSel - 1);
                         case DatasetADL.DL
                             sel = randi(dataset.indices.target_train_num, batchSize, 1);
                     end
@@ -121,24 +128,52 @@ classdef DatasetADL < Dataset
                                                 Dataset.slice(dataset.amazon.train_labels_expand, sourceSel)};
                     end
                 case Opt.TEST
-                    batchSize = min([dataset.indices.target_test_num - dataset.totalSize, opt.batchSize]);
                     switch(dataset.phase)
-                        case {DatasetADL.AD, DatasetADL.ADL}
-                            error('Wrong configuration set!')
+                        case DatasetADL.AD
+                            batchSize = min([dataset.indices.source_num - dataset.totalSize, opt.batchSize]);
+                            sel = dataset.totalSize + (1:batchSize);
+                            dataset.inBatch = {Dataset.slice(dataset.amazon.train_features, sel)};
                         case DatasetADL.DL
+                            batchSize = min([dataset.indices.target_test_num - dataset.totalSize, opt.batchSize]);
                             sel = dataset.totalSize + (1:batchSize);
                             dataset.inBatch = {Dataset.slice(dataset.dslr.test_features, sel)};
                             dataset.outBatch = {Dataset.slice(dataset.dslr.test_labels_expand, sel)};
+                        case DatasetADL.ADL
+                            error('Wrong configuration set!')
                     end
             end
             dataset.totalSize = dataset.totalSize + batchSize;
         end
-        function postTest(dataset, blobs)
-            dataset.postTest@Dataset(blobs);
+        function preTest(dataset)
+            dataset.totalSize = 0;
+            dataset.predict = cell(1);
+        end
+        function processTestBatch(dataset, blobs)
+            switch(dataset.phase)
+                case DatasetADL.AD
+                    dataset.predict = cellfun(@(x, y) [x, y], dataset.predict, {blobs.value}, 'UniformOutput', false);
+                case DatasetADL.DL
+                    dataset.processTestBatch@Dataset(blobs);
+                case DatasetADL.ADL
+            end
         end
         function showTestInfo(dataset)
-            error = sum(dataset.dslr.test_labels ~= dataset.labels(dataset.predict{1})) / dataset.indices.target_test_num;
-            fprintf('[DNN Testing] 0/1 Error: %.3f\n', error);
+            switch(dataset.phase)
+                case DatasetADL.AD
+                    source_features = gather(dataset.predict{1});
+                    source_labels = dataset.amazon.train_labels;
+                    target_train_features = dataset.dslr.train_features;
+                    target_train_labels = dataset.dslr.train_labels;
+                    target_test_features = dataset.dslr.test_features;
+                    target_test_labels = dataset.dslr.test_labels;
+                    save('util/projection', 'source_features', 'source_labels', ...
+                        'target_train_features', 'target_train_labels', ...
+                        'target_test_features', 'target_test_labels');
+                case DatasetADL.DL
+                    error = sum(dataset.dslr.test_labels ~= dataset.labels(dataset.predict{1})) / dataset.indices.target_test_num;
+                    fprintf('0/1 Error: %.3f\n', error);
+                case DatasetADL.ADL
+            end
         end
     end
 end
