@@ -17,29 +17,43 @@ classdef DatasetADL < Dataset
     end
 
     methods(Static)
-        function blobs = getBlobs()
-            blobs = [ ...
-                Blob( 800, []), ...
-                Blob(  31, [Blob.LU, Blob.OP_RELU]), ...
-                Blob( 600, [Blob.LU, Blob.LOSS_SQUARED]) ...
-                Blob(1024, [Blob.LU, Blob.OP_RELU]), ...
-                Blob(  31, [Blob.LU, Blob.LOSS_CROSS_ENTROPY]), ...
+        function net = getNet()
+            layers = [ ...
+                Layer( 800, []), ...
+                Layer(  31, [Layer.LU, Layer.OP_RELU]), ...
+                Layer( 600, [Layer.LU, Layer.LOSS_SQUARED]) ...
+                Layer(1024, [Layer.LU, Layer.OP_RELU]), ...
+                Layer(  31, [Layer.LU, Layer.LOSS_CROSS_ENTROPY]), ...
             ];
-            blobs(1).setNext(blobs(2)) ...
-                    .setNext(blobs(3)) ...
-                    .setNext(blobs(4)) ...
-                    .setNext(blobs(5));
+
+            connections = [ ...
+                Connection([Connection.GRADIENT_ADAGRAD]), ...
+                Connection([Connection.GRADIENT_ADAGRAD]), ...
+            ];
+
+            layers(1).addNext(layers(2)) ...
+                     .addNext(layers(3)) ...
+                     .addNext(layers(4), connections(1)) ...
+                     .addNext(layers(5), connections(2));
+
+            net.layers = layers;
+            net.connections = connections;
         end
         function opt = getOpt()
             opt = Opt();
+
             opt.batchSize      = 256;
-            opt.sampleNum      = 0;
+            opt.sampleNum;
             opt.reportInterval = 1000;
 
-            opt.provide  = Opt.BATCH;
-            opt.gradient = Opt.ADAGRAD;
+            opt.flag;
+            opt.provide = Opt.BATCH;
+            opt.collect;
 
-            opt.learn  = 0.01;
+            opt.connectionType.gradient;
+            opt.connectionType.regulator;
+            opt.learn;
+            opt.momentum;
             opt.lambda = 0.005;
         end
     end
@@ -84,21 +98,21 @@ classdef DatasetADL < Dataset
             dataset.phase = phase;
             switch(phase)
                 case DatasetADL.AD
-                    nn.blobs(1).type.IO = Blob.IO_INPUT;
-                    nn.blobs(3).type.IO = Blob.IO_OUTPUT;
-                    nn.blobs(5).type.IO = Blob.IO_DISABLE;
+                    nn.layers(1).type.io = Layer.IO_INPUT;
+                    nn.layers(3).type.io = Layer.IO_OUTPUT;
+                    nn.layers(5).type.io = Layer.IO_DISABLE;
                     nn.opt.collect = false;
                 case DatasetADL.DL
-                    nn.blobs(1).type.IO = Blob.IO_DISABLE;
-                    nn.blobs(3).type.IO = Blob.IO_INPUT;
-                    nn.blobs(5).type.IO = Blob.IO_OUTPUT;
-                    nn.blobs(5).weight = 1;
+                    nn.layers(1).type.io = Layer.IO_DISABLE;
+                    nn.layers(3).type.io = Layer.IO_INPUT;
+                    nn.layers(5).type.io = Layer.IO_OUTPUT;
+                    nn.layers(5).weight = 1;
                     nn.opt.collect = true;
                 case DatasetADL.ADL
-                    nn.blobs(1).type.IO = Blob.IO_INPUT;
-                    nn.blobs(3).type.IO = Blob.IO_OUTPUT;
-                    nn.blobs(5).type.IO = Blob.IO_OUTPUT;
-                    nn.blobs(5).weight = 0.5;
+                    nn.layers(1).type.io = Layer.IO_INPUT;
+                    nn.layers(3).type.io = Layer.IO_OUTPUT;
+                    nn.layers(5).type.io = Layer.IO_OUTPUT;
+                    nn.layers(5).weight = 0.5;
                     nn.opt.collect = true;
             end 
             nn.cache();
@@ -148,12 +162,12 @@ classdef DatasetADL < Dataset
             dataset.totalSize = 0;
             dataset.predict = cell(1);
         end
-        function processTestBatch(dataset, blobs)
+        function processTestBatch(dataset, layers)
             switch(dataset.phase)
                 case DatasetADL.AD
-                    dataset.predict = cellfun(@(x, y) [x, y], dataset.predict, {blobs.value}, 'UniformOutput', false);
+                    dataset.predict = cellfun(@(x, y) [x, y], dataset.predict, {layers.value}, 'UniformOutput', false);
                 case DatasetADL.DL
-                    dataset.processTestBatch@Dataset(blobs);
+                    dataset.processTestBatch@Dataset(layers);
                 case DatasetADL.ADL
             end
         end

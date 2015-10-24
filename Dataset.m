@@ -13,7 +13,8 @@ classdef Dataset < handle
     end
     
     methods(Abstract, Static)
-        blobs = getBlobs();
+        %layers = getLayers();
+        net = getNet();
         opt = getOpt();
     end
 
@@ -61,8 +62,8 @@ classdef Dataset < handle
         function preTest(dataset)
             dataset.totalSize = 0;
         end
-        function processTestBatch(dataset, blobs)
-            index = cellfun(@Dataset.maxIndex, {blobs.aux}, 'UniformOutput', false);
+        function processTestBatch(dataset, layers)
+            index = cellfun(@Dataset.maxIndex, {layers.aux}, 'UniformOutput', false);
             dataset.predict = cellfun(@(x, y) [x, y], dataset.predict, index, 'UniformOutput', false);
         end
         function showTestInfo(dataset)
