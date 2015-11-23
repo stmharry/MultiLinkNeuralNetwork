@@ -1,65 +1,78 @@
 classdef DatasetUSPS < Dataset
     properties
-        X;
-        Y;
-        Y0;
-        mu;
-        sigma;
+        u;
+        l;
     end
-    
+
     methods(Static)
-        function blobs = getBlobs()
-            blobs = [ ...
-                Blob(256, Blob.IO_INPUT), ...
-                Blob(256, Blob.LU + Blob.OP_RELU), ...
-                Blob( 10, Blob.LU + Blob.LOSS_SOFTMAX + Blob.IO_OUTPUT) ...
+        function net = getNet()
+            opt = Opt([ ...
+                Opt.BATCHSIZE, 256, ...
+                Opt.SAMPLENUM, 0, ...
+                Opt.REPORT_INTERVAL, 1000, ...
+                Opt.PROVIDE, Opt.WHOLE, ...
+            ]);
+
+            layers = [ ...
+                Layer(256, [Layer.IO_INPUT]), ...
+                Layer(511, []), ...
+                Layer( 10, [Layer.LOSS_DECISION_FOREST, ...
+                            Layer.IO_OUTPUT]) ...
             ];
-            blobs(1).setInput().setNext(blobs(2)).setNext(blobs(3)).setOutput();
-        end
-        function opt = getOpt()
-            opt = Opt();
-            opt.batchSize = 64;
-            opt.sampleNum = 1024;
-            opt.reportInterval = 64;
-            opt.learn = 0.1;
+            
+            connection = Connection([ ...
+                Connection.CONNECT_FULL, ...
+                Connection.GRADIENT_ADAGRAD, ...
+                Connection.REGULATOR_DISABLE, ...
+                Connection.GRADIENT_LEARN, 0.01, ...
+            ]);
+
+            connections = [
+                Connection([], connection);
+                Connection([ ...
+                    Connection.CONNECT_DECISION_FOREST, ...
+                    Connection.CONNECT_DECISION_FOREST_TREE, 16, ...
+                    Connection.CONNECT_DECISION_FOREST_NUM, 127, ...
+                    Connection.CONNECT_DECISION_FOREST_PRUNEOUT, 0, ...
+                    Connection.GRADIENT_ADAGRAD, ...
+                    Connection.GRADIENT_LEARN, 0.001]);
+            ];
+
+            layers(1).addNext(layers(2), connections(1));
+            layers(2).addNext(layers(3), connections(2));
+
+            net.layers = layers;
+            net.connections = connections;
+            net.opt = opt;
         end
     end
 
     methods
         function dataset = DatasetUSPS()
-            dir = '../';
-            usps = load([dir, 'USPSdata.mat']);
-            dataset.X = double(usps.X);
-            dataset.Y = double(usps.Y);
-            dataset.Y0 = unique(usps.Y);    
+            dataset.u = load(['../USPSdata.mat']);
+            dataset.u.X = zscore(dataset.u.X, 0, 2);
+            dataset.u.n = length(dataset.u.Y);
+            dataset.u.l = unique(dataset.u.Y);
+            dataset.u.Z = Util.expand(dataset.u.Y, dataset.u.l);
         end
-        function getTrainData(dataset)
-            dataset.getTrainData@Dataset();
-
-            numPerClass = 3;
-            X = [];
-            Y = [];
-            for i = 1:length(dataset.Y0)
-                sel = find(dataset.Y == dataset.Y0(i), numPerClass);
-                X = [X, dataset.X(:, sel)];
-                Y = [Y, dataset.Y(:, sel)];
-            end
-            [X, dataset.mu, dataset.sigma] = zscore(X, 0, 2);
-            dataset.sigma(dataset.sigma == 0) = 1;
-
-            dataset.in = {X};
-            dataset.out = {bsxfun(@eq, Y, dataset.Y0')};
-            dataset.sampleNum = length(Y);
+        function getDataWhole(dataset, opt)
+            dataset.in = {dataset.u.X};
+            dataset.out = {dataset.u.Z};
+            dataset.sampleNum = dataset.u.n;
         end
-        function getTestData(dataset)
-            dataset.getTestData@Dataset();
-
-            X = bsxfun(@rdivide, bsxfun(@minus, dataset.X, dataset.mu), dataset.sigma);
-            Y = dataset.Y;
-
-            dataset.in = {X};
-            dataset.out = {bsxfun(@eq, Y, dataset.Y0')};
-            dataset.sampleNum = length(Y);
+        function preTest(dataset)
+            dataset.sampleNum = dataset.u.n;
+            dataset.predict = cell(1);
+        end
+        function processTestBatch(dataset, layers)
+            index = cellfun(@Util.maxIndex, {layers.aux}, 'UniformOutput', false);
+            dataset.predict = cellfun(@(x, y) [x, y], dataset.predict, index, 'UniformOutput', false);
+        end
+        function showTestInfo(dataset)
+            e = sum(dataste.u.l(dataset.predict{1}) ~= dataset.u.Y) / dataset.u.n;
+            fprintf('[0/1 error] %.3f\n', e);
         end
     end
 end
+
+

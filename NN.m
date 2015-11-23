@@ -9,10 +9,6 @@ classdef NN < handle
     end
 
     properties
-        gpu;
-        real = 'single';
-        epsilon = 1e-9;
-
         dataset;
         layers;
         connections;
@@ -35,24 +31,8 @@ classdef NN < handle
                 file = arg;
                 % TODO
             elseif(isa(arg, 'Dataset'))
-                dataset = arg;
-
-                nn.gpu = (gpuDeviceCount > 0);
-                if(nn.gpu)
-                    nn.real = 'single';
-                end
-
-                nn.dataset = dataset;
-                net = dataset.getNet();
-                nn.opt = dataset.getOpt();
-
-                nn.layers = net.layers;
-                layerNum = length(nn.layers);
-                nn.input = sparse(layerNum, 1);
-                nn.output = sparse(layerNum, 1);
-                for i = 1:layerNum
-                    nn.layers(i).id = i;
-                end
+                nn.dataset = arg;
+                nn.init();
                 nn.cache();
 
                 nn.totalSize = 0;
@@ -60,19 +40,40 @@ classdef NN < handle
             end
         end
 
-        function cache(nn)
-            layerNum = length(nn.layers);
+        function init(nn)
+            net = nn.dataset.getNet();
+            nn.opt = net.opt;
+            nn.layers = net.layers;
 
+            layerNum = length(nn.layers);
+            for i = 1:layerNum
+                nn.layers(i).id = i;
+            end
+            
             nn.connections = Connection.empty(0);
-            nn.connections(layerNum, layerNum) = Connection();
+            for i = 1:layerNum
+                for j = 1:layerNum
+                    nn.connections(i, j) = Connection();
+                end
+            end
             for i = 1:layerNum
                 layerI = nn.layers(i);
-                nn.input(i) = (layerI.type.io == Layer.IO_INPUT); 
-                nn.output(i) = (layerI.type.io == Layer.IO_OUTPUT);
                 for j = 1:length(layerI.next)
                     layerJ = layerI.next(j);
                     nn.connections(i, layerJ.id) = layerI.connections(j);
                 end
+            end
+        end
+
+        function cache(nn)
+            layerNum = length(nn.layers);
+            
+            nn.input = sparse(layerNum, 1);
+            nn.output = sparse(layerNum, 1);
+            for i = 1:layerNum
+                layerI = nn.layers(i);
+                nn.input(i) = (layerI.type.io == Layer.IO_INPUT); 
+                nn.output(i) = (layerI.type.io == Layer.IO_OUTPUT);
             end
 
             nn.link = struct([]);
@@ -104,22 +105,15 @@ classdef NN < handle
             nn.link = fliplr(nn.link);
 
             for i = 1:length(nn.link)
-                f = [nn.link(i).from];
-                t = [nn.link(i).to];
+                f = nn.link(i).from;
+                t = nn.link(i).to;
+
                 dimFrom = nn.layers(f).dimension;
                 dimTo = nn.layers(t).dimension;
   
                 connection = nn.connections(f, t);
-                if(~connection.init)
-                    connection.init = true;
-                    connection.weight = ...
-                        [NN.zeros(dimTo, 1, nn.gpu, nn.real), ...
-                         (NN.rand(dimTo, dimFrom, nn.gpu, nn.real) - 0.5) * 2 / sqrt(dimFrom)];
-                    connection.gradient = nn.epsilon * NN.ones(dimTo, dimFrom + 1, nn.gpu, nn.real);
-                    connection.type = nn.opt.connectionType;
-                    connection.learn = nn.opt.learn;
-                    connection.momentum = nn.opt.momentum;
-                    connection.lambda = nn.opt.lambda;
+                if(~connection.isInit)
+                    connection.init(dimFrom, dimTo);
                 end
             end
             nn.error = zeros(sum(nn.output), 1);
@@ -135,7 +129,7 @@ classdef NN < handle
             opt = nn.opt;
 
             opt.flag = Opt.TRAIN;
-            dataset.configure(opt);
+            dataset.configure(nn);
 
             nn.info(Opt.TRAIN, NN.TITLE);
             nn.info(Opt.TRAIN, NN.HEADER);
@@ -168,7 +162,7 @@ classdef NN < handle
             opt = nn.opt;
 
             opt.flag = Opt.TEST;
-            dataset.configure(opt);
+            dataset.configure(nn);
             dataset.preTest();
 
             nn.info(Opt.TEST, NN.TITLE);
@@ -201,172 +195,47 @@ classdef NN < handle
 
         function clean(nn)
             for i = 1:length(nn.layers)
-                layer = nn.layers(i);
-                layer.value = NN.zeros(layer.dimension, nn.batchSize, nn.gpu, nn.real);
-                layer.error = NN.zeros(layer.dimension, nn.batchSize, nn.gpu, nn.real);
-                if(layer.type.dropout ~= Layer.DROPOUT_DISABLE)
-                    layer.dropout = NN.zeros(layer.dimension, nn.batchSize, nn.gpu, nn.real);
-                end
-                if(layer.type.loss ~= Layer.LOSS_DISABLE)
-                    layer.aux = NN.zeros(layer.dimension, nn.batchSize, nn.gpu, nn.real);
-                end
+                nn.layers(i).clean(nn.batchSize, nn.opt);
             end
         end
 
         function feed(nn, inBatch)
             in = find(nn.input);
             for i = 1:length(in)
-                nn.layers(in(i)).value = inBatch{i};
+                if(nn.layers(in(i)).dimension ~= size(inBatch{i}))
+                    error('Input dimension does not match layer dimension!');
+                end
+                nn.layers(in(i)).feed(inBatch{i});
             end
         end
 
         function forward(nn)
-            opt = nn.opt;
-
-            for i = 1:length(nn.link)
-                f = [nn.link(i).from];
-                t = [nn.link(i).to];
-                layerFrom = nn.layers(f);
-                layerTo = nn.layers(t);
-                
-                switch(layerTo.type.lu)
-                    case Layer.LU_DISABLE
-                        error('No connection!');
-                    case Layer.LU
-                        layerTo.value = layerTo.value + nn.connections(f, t).weight * NN.pad(layerFrom.value, nn.batchSize, nn.gpu, nn.real);
-                end
-    
-                switch(layerTo.type.op)
-                    case Layer.OP_DISABLE
-                    case Layer.OP_RELU
-                        layerTo.value = layerTo.value .* (layerTo.value > 0);
-                    case Layer.OP_FAST_SIGMOID
-                        layerTo.value = layerTo.value ./ (1 + abs(layerTo.value));
-                end
-
-                switch(layerTo.type.dropout)
-                    case Layer.DROPOUT_DISABLE
-                    case Layer.DROPOUT
-                        if(opt.flag == Opt.TRAIN)
-                            if(isempty(layerTo.dropout))
-                                layerTo.dropout = (NN.rand(layerTo.dimension, nn.batchSize, nn.gpu, nn.real) > opt.dropout);
-                            end
-                            layerTo.value = layerTo.value .* layerTo.dropout;
-                        elseif(opt.flag == Opt.TEST)
-                            layerTo.value = layerTo.value * (1 - opt.dropout);
-                        end
-                end
-
-                if(layerTo.type.io == Layer.IO_OUTPUT)
-                    switch(layerTo.type.loss)
-                        case Layer.LOSS_DISABLE
-                            error('IO_OUTPUT without LOSS set!')
-                        case Layer.LOSS_SQUARED
-                        case Layer.LOSS_SQUARED_RATIO
-                        case Layer.LOSS_CROSS_ENTROPY
-                            layerTo.aux = exp(bsxfun(@minus, layerTo.value, max(layerTo.value)));
-                            layerTo.aux = bsxfun(@rdivide, layerTo.aux, sum(layerTo.aux));
-                    end
-                end
+            for l = nn.link
+                nn.connections(l.from, l.to).forward(nn.layers(l.from), nn.layers(l.to), nn.batchSize, nn.opt);
+                nn.layers(l.to).forward(nn.batchSize, nn.opt);
             end
         end
 
         function collect(nn, outBatch)
             out = find(nn.output);
             for i = 1:length(out)
-                layer = nn.layers(out(i));
-
-                switch(layer.type.loss)
-                    case Layer.LOSS_DISABLE
-                    case Layer.LOSS_SQUARED
-                        layer.error = layer.value - outBatch{i};
-                        nn.error(i) = nn.error(i) + gather(1 / 2 * sum(sum(layer.error .* layer.error)));
-                    case Layer.LOSS_SQUARED_RATIO
-                        temp = outBatch{i}(1, :) - 1 / 2;
-                        layer.error = bsxfun(@times, layer.value - outBatch{i}(2:end, :), temp); 
-                        nn.error(i) = nn.error(i) + gather(sum(log(sum(layer.error .* layer.error)) .* temp));
-                    case Layer.LOSS_CROSS_ENTROPY
-                        layer.error = layer.aux - outBatch{i};
-                        nn.error(i) = nn.error(i) - gather(sum(sum(outBatch{i} .* log(layer.aux))));
+                if(nn.layers(out(i)).dimension ~= size(outBatch{i}))
+                    error('Output dimension does not match layer dimension!');
                 end
-
-                layer.error = layer.weight * layer.error;
+                nn.error(i) = nn.error(i) + nn.layers(out(i)).collect(outBatch{i});
             end
         end
 
         function backward(nn)
-            for i = 1:length(nn.link)
-                f = [nn.link(i).from];
-                t = [nn.link(i).to];
-                layerFrom = nn.layers(f);
-                layerTo = nn.layers(t);
-
-                switch(layerTo.type.op)
-                    case Layer.OP_DISABLE
-                    case Layer.OP_RELU
-                        layerTo.error = layerTo.error .* (layerTo.value > 0);
-                    case Layer.OP_FAST_SIGMOID
-                        temp = 1 - abs(layerTo.value);
-                        layerTo.error = layerTo.error .* temp .* temp;
-                end
-
-                switch(layerTo.type.dropout)
-                    case Layer.DROPOUT_DISABLE
-                    case Layer.DROPOUT
-                        layerTo.error = layerTo.error .* layerTo.dropout;
-                end
-
-                switch(layerTo.type.lu)
-                    case Layer.LU_DISABLE
-                    case Layer.LU
-                        layerFrom.error = layerFrom.error + nn.connections(f, t).weight(:, 2:end)' * layerTo.error;
-                end
+            for l = nn.link
+                nn.layers(l.to).backward(nn.batchSize, nn.opt);
+                nn.connections(l.from, l.to).backward(nn.layers(l.from), nn.layers(l.to), nn.batchSize, nn.opt);
             end
         end
 
         function update(nn)
-            opt = nn.opt;
-
-            for i = 1:length(nn.link)
-                f = [nn.link(i).from];
-                t = [nn.link(i).to];
-                layerFrom = nn.layers(f);
-                layerTo = nn.layers(t);
-                connection = nn.connections(f, t);
-
-                gradient = layerTo.error * (NN.pad(layerFrom.value, nn.batchSize, nn.gpu, nn.real))' / nn.batchSize;
-                switch(connection.type.gradient)
-                    case Connection.GRADIENT_DISABLE
-                        error('No update method set!');
-                    case Connection.GRADIENT_SGD
-                        % V+ = momentum * V + learn * gradient
-                        % W+ = W - V+
-                        gradient = connection.learn * gradient;
-                        if(connection.momentum)
-                            gradient = gradient + connection.momentum * connection.gradient;
-                        end
-                        connection.gradient = gradient;
-                    case Connection.GRADIENT_ADAGRAD
-                        % V+ = V + gradient .* gradient
-                        % W+ = W - learn * gradient ./ sqrt(V+)
-                        connection.gradient = connection.gradient + gradient .* gradient;
-                        gradient = connection.learn * gradient ./ sqrt(connection.gradient);
-                end
-
-                switch(connection.type.regulator)
-                    case Connection.REGULATOR_SQUARED
-                        % W+ = (1 - lambda) * W - gradient
-                        if(connection.lambda)
-                            connection.weight = (1 - connection.lambda) * connection.weight;
-                        end
-                    case Connection.REGULATOR_LOGARITHM
-                        % W+ = (1 + lambda / |W| ^ 2 ) * W - gradient
-                        if(connection.lambda)
-                            temp = sum(sum(connection.weight .* connection.weight)) / layerTo.dimension;
-                            connection.weight = (1 + connection.lambda / temp) * connection.weight;
-                        end
-                end
-                connection.weight = connection.weight - gradient;
+            for l = nn.link
+                nn.connections(l.from, l.to).update(nn.layers(l.from), nn.layers(l.to), nn.batchSize, nn.opt);
             end
         end
 
@@ -375,10 +244,10 @@ classdef NN < handle
                 case NN.TITLE
                     switch(flag)
                         case Opt.TRAIN
-                            tcprintf('red', '[ DNN Training ]\n');
+                            tcprintf('red', '[ NN Training ]\n');
                         case Opt.TEST
                             space = 59;
-                            tcprintf('red', '[ DNN Testing ]\n');
+                            tcprintf('red', '[ NN Testing ]\n');
                             tcprintf('green', ['0 |', repmat(char(32), 1, space), '| 100', repmat(char(8), 1, space + 5)]);
                     end
                 case NN.PROGRESS
@@ -418,7 +287,7 @@ classdef NN < handle
                     switch(flag)
                         case Opt.TRAIN
                         case Opt.TEST
-                            tcprintf('red', '[ DNN Testing Extra ]\n');
+                            tcprintf('red', '[ NN Testing Extra ]\n');
                     end
             end
         end
@@ -429,50 +298,22 @@ classdef NN < handle
                 case Opt.TRAIN
                     e = nn.error / nn.accumSize;
                 case Opt.TEST
-                    e = nn.error / dataset.totalSize;
+                    e = nn.error / nn.dataset.totalSize;
             end
 
             out = find(nn.output);
             for o = 1:length(out)
                 switch(nn.layers(out(o)).type.loss)
                     case Layer.LOSS_SQUARED
-                        str = [str, num2str([e(o), log(e(o))], '%.2f (%.2f) ')];
+                        str = [str, num2str([e(o), log10(e(o))], '[SQ] %.2f (%.2f) ')];
                     case Layer.LOSS_SQUARED_RATIO
-                        str = [str, num2str(e(o), '%.2f ')];
+                        str = [str, num2str(e(o), '[SQR] %.2f ')];
                     case Layer.LOSS_CROSS_ENTROPY
-                        str = [str, num2str(e(o), '%.2f ')];
+                        str = [str, num2str([e(o), log10(e(o))], '[CE] %.2f (%.2f) ')];
+                    case Layer.LOSS_DECISION_FOREST
+                        str = [str, num2str([e(o), log10(e(o))], '[DF] %.2f (%.2f) ')];
                 end
             end
         end
     end
-    
-    methods(Static)
-        function out = zeros(x, y, gpu, real)
-            if(gpu)
-                out = gpuArray.zeros(x, y, real);
-            else
-                out = zeros(x, y, real);
-            end
-        end
-
-        function out = ones(x, y, gpu, real)
-            if(gpu)
-                out = gpuArray.ones(x, y, real);
-            else
-                out = ones(x, y, real);
-            end
-        end
-
-        function out = rand(x, y, gpu, real)
-            if(gpu)
-                out = gpuArray.rand(x, y, real);
-            else
-                out = rand(x, y, real);
-            end
-        end
-        
-        function out = pad(in, size, gpu, real)
-            out = [NN.ones(1, size, gpu, real); in];
-        end
-    end
-end
+end 

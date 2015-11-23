@@ -13,19 +13,7 @@ classdef Dataset < handle
     end
     
     methods(Abstract, Static)
-        %layers = getLayers();
         net = getNet();
-        opt = getOpt();
-    end
-
-    methods(Static)
-        function out = slice(in, sel)
-            out = in(:, sel);
-        end
-
-        function out = maxIndex(in)
-            [~, out] = max(in);
-        end
     end
 
     methods
@@ -34,14 +22,24 @@ classdef Dataset < handle
             dataset.totalSize = 0;
             dataset.flag = 0;
         end
-        function configure(dataset, opt)
-            if(dataset.flag ~= opt.flag)
+        function configure(dataset, nn)
+            opt = nn.opt;
+            if(opt.flag ~= dataset.flag)
                 if(opt.provide == Opt.WHOLE)
                     dataset.getDataWhole(opt);
                 end
-                dataset.totalSize = 0;
                 dataset.flag = opt.flag;
             end
+
+            if(opt.flag == Opt.TRAIN)
+                dataset.totalSize = nn.totalSize;
+            elseif(opt.flag == Opt.TEST)
+                dataset.totalSize = 0;
+            end
+        end
+        function batchSize = getBatchSize(dataset, opt, num)
+            batchSize = min([num - dataset.totalSize, opt.batchSize]);
+            dataset.totalSize = dataset.totalSize + batchSize;
         end
         function getDataWhole(dataset, opt)
             % 
@@ -49,21 +47,20 @@ classdef Dataset < handle
         function batchSize = getDataBatch(dataset, opt) 
             switch(opt.flag)
                 case Opt.TRAIN
-                    batchSize = min([opt.sampleNum - dataset.totalSize, opt.batchSize]);
+                    batchSize = dataset.getBatchSize(opt, opt.sampleNum);
                     sel = randi(dataset.sampleNum, batchSize, 1);
                 case Opt.TEST
-                    batchSize = min([dataset.sampleNum - dataset.totalSize, opt.batchSize]);
-                    sel = dataset.totalSize + (1:batchSize);
+                    batchSize = dataset.getBatchSize(opt, dataset.sampleNum);
+                    sel = dataset.totalSize - batchSize + (1:batchSize);
             end
-            dataset.totalSize = dataset.totalSize + batchSize;
-            dataset.inBatch = cellfun(@(x) Dataset.slice(x, sel), dataset.in, 'UniformOutput', false);
-            dataset.outBatch = cellfun(@(x) Dataset.slice(x, sel), dataset.out, 'UniformOutput', false);
+            dataset.inBatch = cellfun(@(x) Util.slice(x, sel), dataset.in, 'UniformOutput', false);
+            dataset.outBatch = cellfun(@(x) Util.slice(x, sel), dataset.out, 'UniformOutput', false);
         end
         function preTest(dataset)
-            dataset.totalSize = 0;
+            %
         end
         function processTestBatch(dataset, layers)
-            index = cellfun(@Dataset.maxIndex, {layers.aux}, 'UniformOutput', false);
+            index = cellfun(@Util.maxIndex, {layers.aux}, 'UniformOutput', false);
             dataset.predict = cellfun(@(x, y) [x, y], dataset.predict, index, 'UniformOutput', false);
         end
         function showTestInfo(dataset)
